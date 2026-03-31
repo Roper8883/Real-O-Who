@@ -9,9 +9,12 @@ import SwiftUI
 
 @main
 struct Real_A_WhoApp: App {
+    @StateObject private var store = JournalStore()
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(store)
         }
     }
 }
