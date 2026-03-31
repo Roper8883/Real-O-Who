@@ -1,0 +1,1059 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  guest
+  buyer
+  seller
+  seller_buyer
+  inspector
+  admin
+  support
+  compliance
+}
+
+enum VerificationStatus {
+  not_started
+  pending
+  verified
+  rejected
+}
+
+enum AustralianState {
+  NSW
+  VIC
+  QLD
+  SA
+  ACT
+  NT
+  WA
+  TAS
+}
+
+enum PropertyType {
+  house
+  townhouse
+  apartment
+  land
+  acreage
+  strata_home
+}
+
+enum SaleMethod {
+  private_treaty
+}
+
+enum ListingMode {
+  owner_direct
+}
+
+enum ListingStatus {
+  draft
+  pending_compliance
+  active
+  under_offer
+  accepted_in_principle
+  contract_requested
+  exchanged
+  settled
+  sold
+  hidden
+}
+
+enum DocumentAccess {
+  public
+  buyer_on_request
+  seller_only
+  admin_only
+}
+
+enum DocumentCategory {
+  contract
+  section_32
+  form_1
+  disclosure_bundle
+  pool_certificate
+  body_corporate
+  title_search
+  survey
+  building_report
+  pest_report
+  council
+  brochure
+}
+
+enum Provenance {
+  seller_supplied
+  public_record
+  licensed_provider
+  estimated
+  unavailable
+}
+
+enum RiskStatus {
+  yes
+  no
+  unknown
+}
+
+enum InspectionType {
+  open_home
+  private_inspection
+}
+
+enum InspectionBookingStatus {
+  requested
+  approved
+  rejected
+  cancelled
+}
+
+enum ServiceType {
+  building
+  pest
+  combined
+}
+
+enum OfferStatus {
+  submitted
+  countered
+  accepted_in_principle
+  rejected
+  expired
+  contract_requested
+}
+
+enum AttachmentType {
+  image
+  pdf
+  doc
+}
+
+enum NotificationChannel {
+  in_app
+  email
+  push
+  sms
+}
+
+enum DeletionRequestStatus {
+  requested
+  approved
+  completed
+  rejected
+}
+
+enum InvoiceStatus {
+  draft
+  issued
+  paid
+  voided
+}
+
+enum PaymentStatus {
+  pending
+  succeeded
+  failed
+  refunded
+}
+
+enum SubscriptionInterval {
+  month
+  year
+}
+
+model User {
+  id                         String                  @id @default(cuid())
+  email                      String                  @unique
+  displayName                String
+  phone                      String?
+  avatarUrl                  String?
+  primaryRole                UserRole
+  roles                      Json
+  verifiedEmail              Boolean                 @default(false)
+  verifiedPhone              Boolean                 @default(false)
+  identityVerificationStatus VerificationStatus      @default(not_started)
+  responseRate               Int?
+  averageResponseHours       Float?
+  preferredLocations         Json?
+  sellerVerification         SellerVerification?
+  buyerPreference            BuyerPreference?
+  consentRecords             ConsentRecord[]
+  notificationPreference     NotificationPreference?
+  sessions                   Session[]
+  deviceHistory              DeviceHistory[]
+  deletionRequests           AccountDeletionRequest[]
+  listings                   Listing[]               @relation("SellerListings")
+  savedProperties            SavedProperty[]
+  savedSearches              SavedSearch[]
+  searchAlerts               SearchAlert[]
+  notifications              Notification[]
+  conversationParticipants   ConversationParticipant[]
+  sentMessages               Message[]               @relation("SentMessages")
+  readReceipts               ReadReceipt[]
+  abuseReports               AbuseReport[]           @relation("ReporterAbuseReports")
+  moderationActions          ModerationAction[]      @relation("ModeratorActions")
+  inspectionBookings         InspectionBooking[]
+  inspectionAttendees        InspectionAttendee[]
+  serviceProvider            ServiceProvider?
+  inspectionQuotes           InspectionQuote[]
+  inspectionOrders           InspectionOrder[]
+  offerThreadsAsBuyer        OfferThread[]           @relation("BuyerOfferThreads")
+  offerThreadsAsSeller       OfferThread[]           @relation("SellerOfferThreads")
+  contractRequests           ContractRequest[]       @relation("RequesterContractRequests")
+  auditLogs                  AuditLog[]              @relation("ActorAuditLogs")
+  adminNotes                 AdminNote[]             @relation("AuthorAdminNotes")
+  invoices                   Invoice[]
+  payments                   Payment[]
+  createdAt                  DateTime                @default(now())
+  updatedAt                  DateTime                @updatedAt
+  deletedAt                  DateTime?
+}
+
+model SellerVerification {
+  id          String             @id @default(cuid())
+  userId      String             @unique
+  user        User               @relation(fields: [userId], references: [id])
+  status      VerificationStatus @default(not_started)
+  evidence    Json?
+  reviewedAt  DateTime?
+  reviewedBy  String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+}
+
+model BuyerPreference {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id])
+  budgetMin          Int?
+  budgetMax          Int?
+  targetStates       Json?
+  targetPropertyTypes Json?
+  needsFinanceClause Boolean  @default(true)
+  notes              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model ConsentRecord {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  scope       String
+  granted     Boolean
+  capturedAt  DateTime @default(now())
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model NotificationPreference {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id])
+  marketingConsent   Boolean  @default(false)
+  emailEnabled       Boolean  @default(true)
+  smsEnabled         Boolean  @default(false)
+  pushEnabled        Boolean  @default(false)
+  savedSearchAlerts  Boolean  @default(true)
+  securityAlerts     Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model Session {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id])
+  refreshTokenId String   @unique
+  ipAddress      String?
+  userAgent      String?
+  expiresAt      DateTime
+  lastSeenAt     DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model DeviceHistory {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  label      String
+  ipAddress  String?
+  userAgent  String?
+  lastSeenAt DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model AccountDeletionRequest {
+  id           String                @id @default(cuid())
+  userId       String
+  user         User                  @relation(fields: [userId], references: [id])
+  status       DeletionRequestStatus @default(requested)
+  requestedAt  DateTime              @default(now())
+  completedAt  DateTime?
+  reason       String?
+  retentionNote String?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+}
+
+model Property {
+  id                String             @id @default(cuid())
+  title             String
+  propertyType      PropertyType
+  saleMethod        SaleMethod         @default(private_treaty)
+  listingMode       ListingMode        @default(owner_direct)
+  state             AustralianState
+  address           PropertyAddress?
+  listings          Listing[]
+  amenities         Amenity[]
+  outgoingCosts     OutgoingCost[]
+  riskFlags         RiskFlag[]
+  schools           SchoolReference[]
+  comparableSales   ComparableSale[]
+  soldHistory       SoldHistoryRecord[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  deletedAt         DateTime?
+}
+
+model PropertyAddress {
+  id           String           @id @default(cuid())
+  propertyId   String           @unique
+  property     Property         @relation(fields: [propertyId], references: [id])
+  line1        String
+  suburb       String
+  postcode     String
+  state        AustralianState
+  country      String           @default("Australia")
+  councilArea  String?
+  latitude     Float
+  longitude    Float
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+}
+
+model Listing {
+  id                      String            @id @default(cuid())
+  propertyId              String
+  property                Property          @relation(fields: [propertyId], references: [id])
+  sellerId                String
+  seller                  User              @relation("SellerListings", fields: [sellerId], references: [id])
+  slug                    String            @unique
+  status                  ListingStatus     @default(draft)
+  priceLabel              String
+  askingPrice             Int?
+  legalDisclosureStatus   String            @default("not_started")
+  publishedAt             DateTime?
+  description             String            @default("")
+  ownerLoves              Json
+  neighbourhoodHighlights Json
+  settlementPreference    String?
+  facts                   Json
+  coverImage              String
+  media                   ListingMedia[]
+  documents               PropertyDocument[]
+  faqs                    ListingFaq[]
+  disclosureBundle        DisclosureBundle?
+  conversations           Conversation[]
+  inspectionSlots         InspectionSlot[]
+  inspectionBookings      InspectionBooking[]
+  inspectionQuotes        InspectionQuote[]
+  inspectionOrders        InspectionOrder[]
+  accessInstruction       AccessInstruction?
+  offerThreads            OfferThread[]
+  transactionMilestones   TransactionMilestone[]
+  contractRequests        ContractRequest[]
+  statusEvents            ListingStatusEvent[]
+  savedProperties         SavedProperty[]
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+  deletedAt               DateTime?
+}
+
+model ListingStatusEvent {
+  id         String        @id @default(cuid())
+  listingId  String
+  listing    Listing       @relation(fields: [listingId], references: [id])
+  fromStatus ListingStatus
+  toStatus   ListingStatus
+  note       String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+}
+
+model Amenity {
+  id          String   @id @default(cuid())
+  propertyId  String
+  property    Property @relation(fields: [propertyId], references: [id])
+  label       String
+  distanceKm  Float
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model OutgoingCost {
+  id          String   @id @default(cuid())
+  propertyId  String
+  property    Property @relation(fields: [propertyId], references: [id])
+  kind        String
+  amount      Int
+  period      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model RiskFlag {
+  id          String     @id @default(cuid())
+  propertyId  String
+  property    Property   @relation(fields: [propertyId], references: [id])
+  key         String
+  label       String
+  status      RiskStatus
+  provenance  Provenance
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model SchoolReference {
+  id          String   @id @default(cuid())
+  propertyId  String
+  property    Property @relation(fields: [propertyId], references: [id])
+  name        String
+  distanceKm  Float
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ComparableSale {
+  id          String      @id @default(cuid())
+  propertyId  String
+  property    Property    @relation(fields: [propertyId], references: [id])
+  address     String
+  soldAt      DateTime
+  soldPrice   Int?
+  distanceKm  Float
+  bedrooms    Int
+  bathrooms   Int
+  landSizeSqm Int?
+  provenance  Provenance
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+model SoldHistoryRecord {
+  id          String      @id @default(cuid())
+  propertyId  String
+  property    Property    @relation(fields: [propertyId], references: [id])
+  soldAt      DateTime
+  soldPrice   Int?
+  provenance  Provenance
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+model PropertyDocument {
+  id           String         @id @default(cuid())
+  listingId     String
+  listing       Listing       @relation(fields: [listingId], references: [id])
+  category      DocumentCategory
+  name          String
+  required      Boolean       @default(false)
+  access        DocumentAccess
+  provenance    Provenance
+  uploadedAt    DateTime?
+  expiresAt     DateTime?
+  version       Int           @default(1)
+  storageKey    String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model DisclosureBundle {
+  id               String                   @id @default(cuid())
+  listingId        String                   @unique
+  listing          Listing                  @relation(fields: [listingId], references: [id])
+  jurisdiction     AustralianState
+  deliveryProof    Json?
+  status           String                   @default("in_progress")
+  requirements     JurisdictionRequirement[]
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+}
+
+model JurisdictionRequirement {
+  id                String          @id @default(cuid())
+  disclosureBundleId String?
+  disclosureBundle  DisclosureBundle? @relation(fields: [disclosureBundleId], references: [id])
+  ruleSetId         String?
+  ruleSet           RuleSet?        @relation(fields: [ruleSetId], references: [id])
+  key               String
+  title             String
+  description       String
+  required          Boolean
+  status            String
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+}
+
+model ListingMedia {
+  id           String   @id @default(cuid())
+  listingId     String
+  listing       Listing  @relation(fields: [listingId], references: [id])
+  kind         String
+  title        String
+  url          String
+  thumbnailUrl String?
+  altText      String
+  isCover      Boolean  @default(false)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model ListingFaq {
+  id         String   @id @default(cuid())
+  listingId  String
+  listing    Listing  @relation(fields: [listingId], references: [id])
+  question   String
+  answer     String
+  pinned     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model Conversation {
+  id                 String                    @id @default(cuid())
+  listingId          String
+  listing            Listing                   @relation(fields: [listingId], references: [id])
+  lastMessagePreview String                    @default("")
+  unreadCount        Int                       @default(0)
+  flagged            Boolean                   @default(false)
+  participants       ConversationParticipant[]
+  messages           Message[]
+  abuseReports       AbuseReport[]
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+}
+
+model ConversationParticipant {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  userId         String
+  user           User         @relation(fields: [userId], references: [id])
+  masked         Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model Message {
+  id             String        @id @default(cuid())
+  conversationId String
+  conversation   Conversation  @relation(fields: [conversationId], references: [id])
+  senderId       String
+  sender         User          @relation("SentMessages", fields: [senderId], references: [id])
+  body           String
+  system         Boolean       @default(false)
+  attachments    Attachment[]
+  readReceipts   ReadReceipt[]
+  abuseReports   AbuseReport[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model Attachment {
+  id         String         @id @default(cuid())
+  messageId  String
+  message    Message        @relation(fields: [messageId], references: [id])
+  name       String
+  kind       AttachmentType
+  storageKey String?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+}
+
+model ReadReceipt {
+  id         String   @id @default(cuid())
+  messageId  String
+  message    Message  @relation(fields: [messageId], references: [id])
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  readAt     DateTime @default(now())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model AbuseReport {
+  id                 String             @id @default(cuid())
+  reporterId         String
+  reporter           User               @relation("ReporterAbuseReports", fields: [reporterId], references: [id])
+  conversationId     String?
+  conversation       Conversation?      @relation(fields: [conversationId], references: [id])
+  messageId          String?
+  message            Message?           @relation(fields: [messageId], references: [id])
+  reason             String
+  status             String             @default("new")
+  moderationActions  ModerationAction[]
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+}
+
+model ModerationAction {
+  id            String      @id @default(cuid())
+  abuseReportId String?
+  abuseReport   AbuseReport? @relation(fields: [abuseReportId], references: [id])
+  moderatorId   String
+  moderator     User        @relation("ModeratorActions", fields: [moderatorId], references: [id])
+  action        String
+  note          String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+model InspectionSlot {
+  id          String                  @id @default(cuid())
+  listingId   String
+  listing     Listing                 @relation(fields: [listingId], references: [id])
+  type        InspectionType
+  startAt     DateTime
+  endAt       DateTime
+  capacity    Int?
+  bookedCount Int                     @default(0)
+  note        String?
+  bookings    InspectionBooking[]
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+}
+
+model InspectionBooking {
+  id             String                  @id @default(cuid())
+  listingId      String
+  listing        Listing                 @relation(fields: [listingId], references: [id])
+  slotId         String
+  slot           InspectionSlot          @relation(fields: [slotId], references: [id])
+  buyerId        String
+  buyer          User                    @relation(fields: [buyerId], references: [id])
+  status         InspectionBookingStatus @default(requested)
+  attendeeCount  Int
+  note           String?
+  attendees      InspectionAttendee[]
+  reminders      InspectionReminder[]
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+}
+
+model InspectionAttendee {
+  id          String             @id @default(cuid())
+  bookingId   String
+  booking     InspectionBooking  @relation(fields: [bookingId], references: [id])
+  userId      String?
+  user        User?              @relation(fields: [userId], references: [id])
+  name        String?
+  email       String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+}
+
+model InspectionReminder {
+  id          String             @id @default(cuid())
+  bookingId   String
+  booking     InspectionBooking  @relation(fields: [bookingId], references: [id])
+  channel     NotificationChannel
+  scheduledAt DateTime
+  deliveredAt DateTime?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+}
+
+model AccessInstruction {
+  id          String   @id @default(cuid())
+  listingId   String   @unique
+  listing     Listing  @relation(fields: [listingId], references: [id])
+  safetyNote  String?
+  arrivalNote String?
+  parkingNote String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ServiceProvider {
+  id                 String               @id @default(cuid())
+  userId             String?              @unique
+  user               User?                @relation(fields: [userId], references: [id])
+  businessName       String
+  description        String
+  serviceTypes       Json
+  turnaroundHours    Int
+  insured            Boolean              @default(false)
+  licenceVerified    Boolean              @default(false)
+  credentials        ProviderCredential[]
+  serviceAreas       ServiceArea[]
+  availabilities     ProviderAvailability[]
+  quotes             InspectionQuote[]
+  orders             InspectionOrder[]
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  deletedAt          DateTime?
+}
+
+model ProviderCredential {
+  id                String           @id @default(cuid())
+  serviceProviderId String
+  serviceProvider   ServiceProvider  @relation(fields: [serviceProviderId], references: [id])
+  credentialType    String
+  licenceNumber     String?
+  insurer           String?
+  expiresAt         DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+}
+
+model ServiceArea {
+  id                String           @id @default(cuid())
+  serviceProviderId String
+  serviceProvider   ServiceProvider  @relation(fields: [serviceProviderId], references: [id])
+  state             AustralianState
+  suburb            String?
+  postcode          String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+}
+
+model InspectionQuote {
+  id                String           @id @default(cuid())
+  serviceProviderId String
+  serviceProvider   ServiceProvider  @relation(fields: [serviceProviderId], references: [id])
+  listingId         String
+  listing           Listing          @relation(fields: [listingId], references: [id])
+  buyerId           String?
+  buyer             User?            @relation(fields: [buyerId], references: [id])
+  serviceType       ServiceType
+  price             Int
+  note              String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+}
+
+model InspectionOrder {
+  id                String           @id @default(cuid())
+  serviceProviderId String
+  serviceProvider   ServiceProvider  @relation(fields: [serviceProviderId], references: [id])
+  listingId         String
+  listing           Listing          @relation(fields: [listingId], references: [id])
+  buyerId           String?
+  buyer             User?            @relation(fields: [buyerId], references: [id])
+  serviceType       ServiceType
+  status            String           @default("requested")
+  scheduledAt       DateTime?
+  report            InspectionReport?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+}
+
+model InspectionReport {
+  id                String           @id @default(cuid())
+  inspectionOrderId String           @unique
+  inspectionOrder   InspectionOrder  @relation(fields: [inspectionOrderId], references: [id])
+  reportType        ServiceType
+  storageKey        String?
+  issuedAt          DateTime?
+  relianceNote      String?
+  expiresAt         DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+}
+
+model ProviderAvailability {
+  id                String           @id @default(cuid())
+  serviceProviderId String
+  serviceProvider   ServiceProvider  @relation(fields: [serviceProviderId], references: [id])
+  startsAt          DateTime
+  endsAt            DateTime
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+}
+
+model OfferThread {
+  id                  String             @id @default(cuid())
+  listingId           String
+  listing             Listing            @relation(fields: [listingId], references: [id])
+  buyerId             String
+  buyer               User               @relation("BuyerOfferThreads", fields: [buyerId], references: [id])
+  sellerId            String
+  seller              User               @relation("SellerOfferThreads", fields: [sellerId], references: [id])
+  status              OfferStatus
+  disclaimers         Json
+  versions            OfferVersion[]
+  statusEvents        OfferStatusEvent[]
+  contractRequests    ContractRequest[]
+  legalInvites        LegalRepresentativeInvite[]
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+}
+
+model OfferVersion {
+  id                      String         @id @default(cuid())
+  offerThreadId           String
+  offerThread             OfferThread    @relation(fields: [offerThreadId], references: [id])
+  amount                  Int
+  depositIntent           Int
+  settlementDays          Int
+  subjectToFinance        Boolean
+  subjectToBuildingInspection Boolean
+  subjectToPestInspection Boolean
+  subjectToSaleOfHome     Boolean
+  requestedInclusions     Json
+  acknowledgedExclusions  Json
+  expiresAt               DateTime
+  message                 String
+  evidenceUploaded        Boolean        @default(false)
+  legalRepresentativeName String?
+  conditions              OfferCondition[]
+  evidence                OfferEvidence[]
+  createdAt               DateTime       @default(now())
+  updatedAt               DateTime       @updatedAt
+}
+
+model OfferCondition {
+  id             String       @id @default(cuid())
+  offerVersionId String
+  offerVersion   OfferVersion @relation(fields: [offerVersionId], references: [id])
+  kind           String
+  label          String
+  value          String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model OfferEvidence {
+  id             String       @id @default(cuid())
+  offerVersionId String
+  offerVersion   OfferVersion @relation(fields: [offerVersionId], references: [id])
+  label          String
+  storageKey     String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model OfferStatusEvent {
+  id            String      @id @default(cuid())
+  offerThreadId String
+  offerThread   OfferThread @relation(fields: [offerThreadId], references: [id])
+  status        OfferStatus
+  note          String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+model TransactionMilestone {
+  id          String   @id @default(cuid())
+  listingId   String
+  listing     Listing  @relation(fields: [listingId], references: [id])
+  label       String
+  value       String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ContractRequest {
+  id              String       @id @default(cuid())
+  listingId       String
+  listing         Listing      @relation(fields: [listingId], references: [id])
+  offerThreadId   String
+  offerThread     OfferThread  @relation(fields: [offerThreadId], references: [id])
+  requesterId     String
+  requester       User         @relation("RequesterContractRequests", fields: [requesterId], references: [id])
+  status          String       @default("requested")
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+}
+
+model LegalRepresentativeInvite {
+  id            String      @id @default(cuid())
+  offerThreadId String
+  offerThread   OfferThread @relation(fields: [offerThreadId], references: [id])
+  kind          String
+  name          String
+  email         String
+  acceptedAt    DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+model SavedProperty {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  listingId   String
+  listing     Listing  @relation(fields: [listingId], references: [id])
+  collection  String
+  note        String?
+  tags        Json
+  status      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model SavedSearch {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  name         String
+  filters      Json
+  instantAlert Boolean  @default(true)
+  alerts       SearchAlert[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model SearchAlert {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  savedSearchId String
+  savedSearch SavedSearch @relation(fields: [savedSearchId], references: [id])
+  listingIds  Json
+  deliveredAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Notification {
+  id          String              @id @default(cuid())
+  userId      String
+  user        User                @relation(fields: [userId], references: [id])
+  channel     NotificationChannel
+  event       String
+  subject     String
+  body        String
+  deliveredAt DateTime?
+  readAt      DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId     String?
+  actor       User?    @relation("ActorAuditLogs", fields: [actorId], references: [id])
+  entityType  String
+  entityId    String
+  action      String
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model AdminNote {
+  id         String   @id @default(cuid())
+  authorId    String?
+  author      User?    @relation("AuthorAdminNotes", fields: [authorId], references: [id])
+  entityType  String
+  entityId    String
+  body        String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model FeatureFlag {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  description String
+  enabled     Boolean  @default(false)
+  targeting   Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model RuleSet {
+  id                  String                   @id @default(cuid())
+  country             String                   @default("Australia")
+  state               AustralianState
+  saleMethod          SaleMethod               @default(private_treaty)
+  disclosureSummary   String
+  coolingOffEnabled   Boolean                  @default(false)
+  coolingOffLabel     String
+  coolingOffNote      String
+  publishingPrereqs   Json
+  inspectionGuidance  Json
+  offerWarnings       Json
+  settlementDefaults  Json
+  featureFlags        Json
+  requirements        JurisdictionRequirement[]
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+}
+
+model CmsPage {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  title       String
+  content     String
+  published   Boolean  @default(false)
+  version     Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model SubscriptionPlan {
+  id          String               @id @default(cuid())
+  code        String               @unique
+  name        String
+  priceCents  Int
+  interval    SubscriptionInterval
+  metadata    Json?
+  invoices    Invoice[]
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+}
+
+model Invoice {
+  id               String        @id @default(cuid())
+  userId           String
+  user             User          @relation(fields: [userId], references: [id])
+  subscriptionPlanId String?
+  subscriptionPlan SubscriptionPlan? @relation(fields: [subscriptionPlanId], references: [id])
+  amountCents      Int
+  currency         String        @default("AUD")
+  status           InvoiceStatus @default(draft)
+  payments         Payment[]
+  issuedAt         DateTime?
+  dueAt            DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id])
+  invoiceId   String?
+  invoice     Invoice?      @relation(fields: [invoiceId], references: [id])
+  amountCents Int
+  currency    String        @default("AUD")
+  status      PaymentStatus @default(pending)
+  providerRef String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model WebhookEvent {
+  id           String   @id @default(cuid())
+  provider     String
+  eventType    String
+  payload      Json
+  receivedAt   DateTime @default(now())
+  processedAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
