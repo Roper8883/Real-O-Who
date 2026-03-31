@@ -869,9 +869,9 @@ private extension Bundle {
 }
 
 private enum LegalDocumentURL {
-    static let privacyPolicy = URL(string: "https://github.com/Roper8883/Real-A-Who/blob/main/docs/privacy-policy.md")!
-    static let termsOfUse = URL(string: "https://github.com/Roper8883/Real-A-Who/blob/main/docs/terms-of-use.md")!
-    static let support = URL(string: "https://github.com/Roper8883/Real-A-Who/blob/main/docs/support.md")!
+    static let privacyPolicy = URL(string: "https://roper8883.github.io/Real-A-Who/privacy-policy/")!
+    static let termsOfUse = URL(string: "https://roper8883.github.io/Real-A-Who/terms-of-use/")!
+    static let support = URL(string: "https://roper8883.github.io/Real-A-Who/support/")!
 }
 
 #Preview {
