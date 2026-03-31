@@ -477,6 +477,20 @@ private struct AboutView: View {
                     Label("Entries stay on this device", systemImage: "lock.fill")
                 }
 
+                Section("Legal") {
+                    Link(destination: LegalDocumentURL.privacyPolicy) {
+                        Label("Privacy Policy", systemImage: "lock.doc")
+                    }
+
+                    Link(destination: LegalDocumentURL.termsOfUse) {
+                        Label("Terms of Use", systemImage: "doc.text")
+                    }
+
+                    Link(destination: LegalDocumentURL.support) {
+                        Label("Support", systemImage: "questionmark.circle")
+                    }
+                }
+
                 Section("Tips") {
                     Text("Use tags like `work`, `family`, or `health` to make patterns easier to spot.")
                     Text("Mark important entries as favorites so they stay easy to revisit.")
@@ -852,6 +866,12 @@ private extension Bundle {
     var buildNumber: String? {
         infoDictionary?["CFBundleVersion"] as? String
     }
+}
+
+private enum LegalDocumentURL {
+    static let privacyPolicy = URL(string: "https://github.com/Roper8883/Real-A-Who/blob/main/docs/privacy-policy.md")!
+    static let termsOfUse = URL(string: "https://github.com/Roper8883/Real-A-Who/blob/main/docs/terms-of-use.md")!
+    static let support = URL(string: "https://github.com/Roper8883/Real-A-Who/blob/main/docs/support.md")!
 }
 
 #Preview {
