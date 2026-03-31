@@ -1,880 +1,1473 @@
 import SwiftUI
 
 private enum AppTab: Hashable {
-    case today
-    case journal
-    case insights
-    case about
+    case discover
+    case saved
+    case sell
+    case inbox
+    case profile
+}
+
+private enum LegalLinks {
+    static let home = URL(string: "https://roper8883.github.io/Real-A-Who/")!
+    static let privacy = URL(string: "https://roper8883.github.io/Real-A-Who/privacy-policy/")!
+    static let terms = URL(string: "https://roper8883.github.io/Real-A-Who/terms-of-use/")!
+    static let support = URL(string: "https://roper8883.github.io/Real-A-Who/support/")!
 }
 
 struct ContentView: View {
-    @EnvironmentObject private var store: JournalStore
-
-    @State private var selectedTab: AppTab = .today
-    @State private var showingComposer = false
-    @State private var editingEntry: JournalEntry?
-    @State private var suggestedPrompt = PromptLibrary.prompt()
+    @EnvironmentObject private var store: MarketplaceStore
+    @State private var selectedTab: AppTab = .discover
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            TodayView(
-                onNewReflection: openTodayPrompt,
-                onQuickNote: openQuickNote,
-                onEdit: edit
-            )
-            .tabItem {
-                Label("Today", systemImage: "sun.max.fill")
-            }
-            .tag(AppTab.today)
-
-            JournalView(
-                onCreate: openQuickNote,
-                onEdit: edit
-            )
-            .tabItem {
-                Label("Journal", systemImage: "book.closed.fill")
-            }
-            .tag(AppTab.journal)
-
-            InsightsView()
+            DiscoverView()
                 .tabItem {
-                    Label("Insights", systemImage: "chart.bar.fill")
+                    Label("Discover", systemImage: "magnifyingglass")
                 }
-                .tag(AppTab.insights)
+                .tag(AppTab.discover)
 
-            AboutView()
+            SavedView()
                 .tabItem {
-                    Label("About", systemImage: "info.circle.fill")
+                    Label("Saved", systemImage: "heart.fill")
                 }
-                .tag(AppTab.about)
+                .tag(AppTab.saved)
+
+            SellDashboardView()
+                .tabItem {
+                    Label("Sell", systemImage: "house.and.flag.fill")
+                }
+                .tag(AppTab.sell)
+
+            InboxView()
+                .badge(store.unreadMessageCount)
+                .tabItem {
+                    Label("Inbox", systemImage: "bubble.left.and.bubble.right.fill")
+                }
+                .tag(AppTab.inbox)
+
+            ProfileView()
+                .tabItem {
+                    Label("Profile", systemImage: "person.crop.circle.fill")
+                }
+                .tag(AppTab.profile)
         }
-        .tint(.indigo)
-        .sheet(isPresented: $showingComposer, onDismiss: clearComposerState) {
-            ReflectionEditorView(
-                existingEntry: editingEntry,
-                suggestedPrompt: suggestedPrompt
-            )
-            .environmentObject(store)
-        }
-    }
-
-    private func openTodayPrompt() {
-        editingEntry = nil
-        suggestedPrompt = PromptLibrary.prompt()
-        showingComposer = true
-    }
-
-    private func openQuickNote() {
-        editingEntry = nil
-        suggestedPrompt = PromptLibrary.quickPrompt
-        showingComposer = true
-    }
-
-    private func edit(_ entry: JournalEntry) {
-        editingEntry = entry
-        suggestedPrompt = ReflectionPrompt(
-            id: -1,
-            title: entry.prompt,
-            followUp: "Tighten the story, add detail, or leave yourself a clearer note."
-        )
-        showingComposer = true
-    }
-
-    private func clearComposerState() {
-        editingEntry = nil
-        suggestedPrompt = PromptLibrary.prompt()
+        .tint(Color(red: 0.11, green: 0.36, blue: 0.52))
     }
 }
 
-private struct TodayView: View {
-    @EnvironmentObject private var store: JournalStore
+private struct DiscoverView: View {
+    @EnvironmentObject private var store: MarketplaceStore
+    @State private var searchText = ""
+    @State private var selectedState: AustralianState?
 
-    let onNewReflection: () -> Void
-    let onQuickNote: () -> Void
-    let onEdit: (JournalEntry) -> Void
-
-    private let columns = [GridItem(.flexible()), GridItem(.flexible())]
+    private var results: [PropertyListing] {
+        store.searchListings(query: searchText, stateFilter: selectedState)
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     heroCard
+                    searchBar
+                    stateFilterRow
+                    discoverySummary
 
-                    LazyVGrid(columns: columns, spacing: 12) {
-                        StatCard(
-                            title: "Current streak",
-                            value: "\(store.currentStreak)",
-                            caption: store.currentStreak == 1 ? "day of reflection" : "days of reflection",
-                            systemImage: "flame.fill",
-                            tint: .orange
-                        )
-                        StatCard(
-                            title: "Entries this week",
-                            value: "\(store.entriesThisWeek)",
-                            caption: "last 7 days",
-                            systemImage: "calendar",
-                            tint: .indigo
-                        )
-                        StatCard(
-                            title: "Saved notes",
-                            value: "\(store.entries.count)",
-                            caption: "total reflections",
-                            systemImage: "square.and.pencil",
-                            tint: .teal
-                        )
-                        StatCard(
-                            title: "Favorites",
-                            value: "\(store.favoritesCount)",
-                            caption: "worth revisiting",
-                            systemImage: "heart.fill",
-                            tint: .pink
-                        )
-                    }
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Recent reflections")
-                            .font(.title3.weight(.semibold))
-
-                        if store.sortedEntries.isEmpty {
-                            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                .fill(.white.opacity(0.78))
-                                .overlay(alignment: .leading) {
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        Text("Nothing saved yet")
-                                            .font(.headline)
-                                        Text("Start with today's prompt or capture a quick note. Everything stays on this device.")
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .padding(20)
-                                }
-                                .frame(maxWidth: .infinity)
-                        } else {
-                            VStack(spacing: 12) {
-                                ForEach(store.sortedEntries.prefix(3)) { entry in
-                                    NavigationLink(value: entry.id) {
-                                        EntryCard(entry: entry)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
+                    ForEach(results) { listing in
+                        NavigationLink {
+                            PropertyDetailView(listingID: listing.id)
+                        } label: {
+                            ListingCard(listing: listing, isSaved: store.isSaved(listing.id))
                         }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(todayBackground.ignoresSafeArea())
+            .background(Color(red: 0.96, green: 0.98, blue: 0.99).ignoresSafeArea())
             .navigationTitle("Real A Who")
             .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: onQuickNote) {
-                        Label("Quick Note", systemImage: "plus.circle.fill")
-                    }
-                }
-            }
-            .navigationDestination(for: UUID.self) { entryID in
-                EntryDetailView(entryID: entryID, onEdit: onEdit)
-            }
         }
     }
 
     private var heroCard: some View {
-        let prompt = PromptLibrary.prompt()
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Private property sales, rebuilt for trust.")
+                .font(.system(.largeTitle, design: .rounded, weight: .bold))
 
-        return VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Reflect on who you really are.")
-                    .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                    .foregroundStyle(.primary)
-
-                Text("A calm, private space for honest notes, quick check-ins, and a clearer sense of what matters.")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Today's prompt")
-                    .font(.caption.weight(.semibold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
-
-                Text(prompt.title)
-                    .font(.title2.weight(.semibold))
-
-                Text(prompt.followUp)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Buyers can search, question, inspect, and make non-binding offers directly with owners. Sellers get state-aware workflows without handing the whole sale to an agent.")
+                .foregroundStyle(.secondary)
 
             HStack(spacing: 12) {
-                Button(action: onNewReflection) {
-                    Label("Answer prompt", systemImage: "sparkles.rectangle.stack.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(FilledButtonStyle(tint: .indigo))
-
-                Button(action: onQuickNote) {
-                    Label("Quick note", systemImage: "square.and.pencil")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(FilledButtonStyle(tint: .white, foreground: .indigo))
+                MetricPill(title: "Live listings", value: "\(store.activeListingCount)")
+                MetricPill(title: "Saved", value: "\(store.savedListings.count)")
+                MetricPill(title: "Inspections", value: "\(store.upcomingInspectionCount)")
             }
         }
         .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(.white.opacity(0.84))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(.white.opacity(0.65), lineWidth: 1)
-        )
-    }
-
-    private var todayBackground: LinearGradient {
-        LinearGradient(
-            colors: [
-                Color(red: 0.99, green: 0.95, blue: 0.90),
-                Color(red: 0.94, green: 0.95, blue: 1.0),
-                Color(red: 0.89, green: 0.96, blue: 0.94)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-    }
-}
-
-private struct JournalView: View {
-    @EnvironmentObject private var store: JournalStore
-
-    let onCreate: () -> Void
-    let onEdit: (JournalEntry) -> Void
-
-    @State private var searchText = ""
-    @State private var favoritesOnly = false
-
-    private var filteredEntries: [JournalEntry] {
-        store.sortedEntries.filter { entry in
-            let matchesSearch: Bool
-
-            if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                matchesSearch = true
-            } else {
-                let searchableText = [
-                    entry.displayTitle,
-                    entry.prompt,
-                    entry.body,
-                    entry.tags.joined(separator: " ")
-                ]
-                .joined(separator: " ")
-                .localizedCaseInsensitiveContains(searchText)
-
-                matchesSearch = searchableText
-            }
-
-            let matchesFavorites = !favoritesOnly || entry.isFavorite
-            return matchesSearch && matchesFavorites
-        }
-    }
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if filteredEntries.isEmpty {
-                    ContentUnavailableView(
-                        favoritesOnly || !searchText.isEmpty ? "No matching reflections" : "No reflections yet",
-                        systemImage: favoritesOnly || !searchText.isEmpty ? "magnifyingglass" : "book.closed",
-                        description: Text(emptyDescription)
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.90, green: 0.95, blue: 0.98),
+                            Color(red: 0.89, green: 0.95, blue: 0.92)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
                     )
-                } else {
-                    List {
-                        Section {
-                            ForEach(filteredEntries) { entry in
-                                NavigationLink(value: entry.id) {
-                                    EntryRow(entry: entry)
-                                }
-                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                    Button {
-                                        store.toggleFavorite(entry)
-                                    } label: {
-                                        Label(
-                                            entry.isFavorite ? "Unfavorite" : "Favorite",
-                                            systemImage: entry.isFavorite ? "heart.slash.fill" : "heart.fill"
-                                        )
-                                    }
-                                    .tint(.pink)
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) {
-                                        store.delete(entry)
-                                    } label: {
-                                        Label("Delete", systemImage: "trash.fill")
-                                    }
+                )
+        )
+    }
 
-                                    Button {
-                                        onEdit(entry)
-                                    } label: {
-                                        Label("Edit", systemImage: "slider.horizontal.3")
-                                    }
-                                    .tint(.indigo)
-                                }
-                            }
-                        } footer: {
-                            Text("Saved reflections are private and stored on this device.")
-                        }
-                    }
-                    .listStyle(.insetGrouped)
+    private var searchBar: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Search suburb, postcode, feature, or address", text: $searchText)
+                .textInputAutocapitalization(.words)
+
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("Journal")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Toggle(isOn: $favoritesOnly) {
-                        Label("Favorites only", systemImage: favoritesOnly ? "heart.fill" : "heart")
-                    }
-                    .toggleStyle(.button)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.white)
+        )
+    }
+
+    private var stateFilterRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                FilterChip(title: "All", isSelected: selectedState == nil) {
+                    selectedState = nil
                 }
 
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: onCreate) {
-                        Label("New Reflection", systemImage: "plus")
+                ForEach(AustralianState.allCases) { state in
+                    FilterChip(title: state.rawValue, isSelected: selectedState == state) {
+                        selectedState = selectedState == state ? nil : state
                     }
                 }
-            }
-            .searchable(text: $searchText, prompt: "Search notes, prompts, or tags")
-            .navigationDestination(for: UUID.self) { entryID in
-                EntryDetailView(entryID: entryID, onEdit: onEdit)
             }
         }
     }
 
-    private var emptyDescription: String {
-        if favoritesOnly || !searchText.isEmpty {
-            return "Try a broader search or turn off the favorites filter."
-        }
+    private var discoverySummary: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Search plus seller workflow, together")
+                .font(.headline)
 
-        return "Use the add button to save your first quick note."
+            Text("Every listing in this iOS build is tied to a state-aware private treaty workflow, with document readiness, direct owner messaging, inspection booking, and non-binding offer actions.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(.white)
+        )
     }
 }
 
-private struct InsightsView: View {
-    @EnvironmentObject private var store: JournalStore
+private struct SavedView: View {
+    @EnvironmentObject private var store: MarketplaceStore
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    if store.entries.isEmpty {
-                        ContentUnavailableView(
-                            "No insights yet",
-                            systemImage: "chart.bar",
-                            description: Text("Add a few reflections and this screen will show patterns in your mood, rhythm, and favorite themes.")
+                    SectionHeader(title: "Shortlist", subtitle: "Saved properties, upcoming inspections, and offers you have in motion.")
+
+                    HStack(spacing: 12) {
+                        StatTile(title: "Saved", value: "\(store.savedListings.count)", caption: "properties")
+                        StatTile(title: "Inspections", value: "\(store.inspections.count)", caption: "booked or requested")
+                        StatTile(title: "Offers", value: "\(store.offers.filter { $0.buyerName == "You" }.count)", caption: "active")
+                    }
+
+                    if store.savedListings.isEmpty {
+                        EmptyStateCard(
+                            title: "No saved properties yet",
+                            message: "Use Discover to build a shortlist, compare document readiness, and keep your due diligence organised."
                         )
-                        .frame(maxWidth: .infinity, minHeight: 280)
                     } else {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Snapshot")
-                                .font(.title3.weight(.semibold))
-
-                            StatCard(
-                                title: "Most common mood",
-                                value: store.mostCommonMood?.title ?? "N/A",
-                                caption: store.mostCommonMood?.insightLine ?? "Keep writing to surface trends.",
-                                systemImage: store.mostCommonMood?.symbol ?? "face.smiling",
-                                tint: store.mostCommonMood?.tint ?? .indigo
-                            )
-                        }
-
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Mood balance")
-                                .font(.title3.weight(.semibold))
-
-                            ForEach(store.moodBreakdown) { item in
-                                MoodBreakdownRow(item: item, totalEntries: max(store.entries.count, 1))
-                            }
-                        }
-                        .padding(20)
-                        .background(.white.opacity(0.8), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Top tags")
-                                .font(.title3.weight(.semibold))
-
-                            if store.tagCounts.isEmpty {
-                                Text("Add comma-separated tags to reflections and they will appear here.")
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                FlowLayout(spacing: 10) {
-                                    ForEach(store.tagCounts.prefix(8), id: \.tag) { tag in
-                                        Text("\(tag.tag) (\(tag.count))")
-                                            .font(.subheadline.weight(.medium))
-                                            .padding(.horizontal, 14)
-                                            .padding(.vertical, 8)
-                                            .background(tagCapsuleColor, in: Capsule())
-                                    }
+                        VStack(spacing: 14) {
+                            ForEach(store.savedListings) { listing in
+                                NavigationLink {
+                                    PropertyDetailView(listingID: listing.id)
+                                } label: {
+                                    ListingCard(listing: listing, isSaved: true)
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
-                        .padding(20)
-                        .background(.white.opacity(0.8), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    }
 
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Writing volume")
-                                .font(.title3.weight(.semibold))
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Inspection planner")
+                            .font(.headline)
 
-                            HStack(spacing: 12) {
-                                InsightMetric(
-                                    title: "Words saved",
-                                    value: "\(store.totalWordCount)"
-                                )
-                                InsightMetric(
-                                    title: "Average per entry",
-                                    value: "\(store.averageWordCount)"
-                                )
-                            }
+                        ForEach(store.inspections) { inspection in
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                .fill(.white)
+                                .overlay(alignment: .leading) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        HStack {
+                                            Text(inspection.propertyTitle)
+                                                .font(.headline)
+                                                .lineLimit(2)
+                                            Spacer()
+                                            StatusBadge(title: inspection.status.rawValue, accent: inspection.status == .confirmed ? .green : .orange)
+                                        }
+
+                                        Text(inspection.slotTitle)
+                                            .font(.subheadline.weight(.medium))
+
+                                        Text("Booked for \(inspection.attendees) attendee\(inspection.attendees == 1 ? "" : "s").")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .padding(18)
+                                }
+                                .frame(height: 128)
                         }
-                        .padding(20)
-                        .background(.white.opacity(0.8), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Offer tracker")
+                            .font(.headline)
+
+                        ForEach(store.offers.filter { $0.buyerName == "You" }) { offer in
+                            OfferCard(offer: offer)
+                        }
                     }
                 }
                 .padding(20)
             }
-            .background(
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.95, green: 0.97, blue: 1.0),
-                        Color(red: 0.97, green: 0.94, blue: 0.91)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-            )
-            .navigationTitle("Insights")
+            .background(Color(red: 0.97, green: 0.98, blue: 0.99).ignoresSafeArea())
+            .navigationTitle("Saved")
         }
-    }
-
-    private var tagCapsuleColor: Color {
-        Color.indigo.opacity(0.12)
     }
 }
 
-private struct AboutView: View {
+private struct SellDashboardView: View {
+    @EnvironmentObject private var store: MarketplaceStore
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    SectionHeader(
+                        title: "Seller dashboard",
+                        subtitle: "Private listing performance, compliance tasks, inspection flow, and offer activity in one place."
+                    )
+
+                    HStack(spacing: 12) {
+                        StatTile(title: "Live", value: "\(store.activeListingCount)", caption: "listings")
+                        StatTile(title: "Offers", value: "\(store.sellerOfferCount)", caption: "active threads")
+                        StatTile(title: "Tasks", value: "\(store.sellerTasks.count)", caption: "open items")
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("My listings")
+                            .font(.headline)
+
+                        ForEach(store.featuredListings) { listing in
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text(listing.heroTitle)
+                                            .font(.headline)
+                                        Text(listing.locationLine)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    StatusBadge(title: listing.status.rawValue, accent: listing.status.accentColor)
+                                }
+
+                                HStack(spacing: 10) {
+                                    Label("\(listing.responseRate)% response", systemImage: "bolt.horizontal.circle")
+                                    Label(listing.averageResponseTime, systemImage: "clock")
+                                    Label(listing.disclosureStatus.rawValue, systemImage: "doc.text.fill")
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                                Text(listing.legalStatusText)
+                                    .font(.subheadline)
+
+                                Text(listing.state.complianceSummary)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(18)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                    .fill(.white)
+                            )
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Compliance and next actions")
+                            .font(.headline)
+
+                        ForEach(store.sellerTasks) { task in
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                .fill(task.isBlocking ? Color(red: 0.98, green: 0.94, blue: 0.90) : .white)
+                                .overlay(alignment: .leading) {
+                                    HStack(alignment: .top, spacing: 14) {
+                                        Image(systemName: task.isBlocking ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
+                                            .foregroundStyle(task.isBlocking ? .orange : .green)
+                                            .font(.title3)
+
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            HStack {
+                                                Text(task.title)
+                                                    .font(.headline)
+                                                Spacer()
+                                                Text(task.dueLabel)
+                                                    .font(.caption.weight(.semibold))
+                                                    .foregroundStyle(.secondary)
+                                            }
+
+                                            Text(task.detail)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .padding(18)
+                                }
+                                .frame(minHeight: 96)
+                        }
+                    }
+                }
+                .padding(20)
+            }
+            .background(Color(red: 0.96, green: 0.97, blue: 0.98).ignoresSafeArea())
+            .navigationTitle("Sell")
+        }
+    }
+}
+
+private struct InboxView: View {
+    @EnvironmentObject private var store: MarketplaceStore
+
     var body: some View {
         NavigationStack {
             List {
-                Section("What It Does") {
-                    Label("Daily reflection prompt", systemImage: "sun.max")
-                    Label("Quick offline note capture", systemImage: "square.and.pencil")
-                    Label("Journal history with search and favorites", systemImage: "magnifyingglass")
-                    Label("On-device mood and tag insights", systemImage: "chart.bar")
-                }
+                Section {
+                    ForEach(store.conversations) { thread in
+                        NavigationLink {
+                            ConversationDetailView(threadID: thread.id)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(thread.participantName)
+                                        .font(.headline)
+                                    Spacer()
+                                    if thread.unreadCount > 0 {
+                                        Text("\(thread.unreadCount)")
+                                            .font(.caption.weight(.bold))
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background(Capsule().fill(Color(red: 0.11, green: 0.36, blue: 0.52)))
+                                            .foregroundStyle(.white)
+                                    }
+                                }
 
-                Section("Privacy") {
-                    Label("No account required", systemImage: "person.crop.circle.badge.checkmark")
-                    Label("No analytics or tracking SDKs", systemImage: "hand.raised.fill")
-                    Label("Entries stay on this device", systemImage: "lock.fill")
-                }
+                                Text(thread.listingTitle)
+                                    .font(.subheadline.weight(.medium))
 
-                Section("Legal") {
-                    Link(destination: LegalDocumentURL.privacyPolicy) {
-                        Label("Privacy Policy", systemImage: "lock.doc")
+                                Text(thread.lastMessagePreview)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            .padding(.vertical, 8)
+                        }
                     }
-
-                    Link(destination: LegalDocumentURL.termsOfUse) {
-                        Label("Terms of Use", systemImage: "doc.text")
-                    }
-
-                    Link(destination: LegalDocumentURL.support) {
-                        Label("Support", systemImage: "questionmark.circle")
-                    }
-                }
-
-                Section("Tips") {
-                    Text("Use tags like `work`, `family`, or `health` to make patterns easier to spot.")
-                    Text("Mark important entries as favorites so they stay easy to revisit.")
-                    Text("A short, honest sentence is enough. The goal is clarity, not perfection.")
-                }
-
-                Section("App Info") {
-                    LabeledContent("Version", value: Bundle.main.releaseVersionNumber ?? "1.0")
-                    LabeledContent("Build", value: Bundle.main.buildNumber ?? "1")
+                } header: {
+                    Text("Direct owner conversations")
+                } footer: {
+                    Text("Contact details stay masked unless both sides choose to reveal them.")
                 }
             }
-            .navigationTitle("About")
-            .listStyle(.insetGrouped)
+            .navigationTitle("Inbox")
         }
     }
 }
 
-private struct EntryDetailView: View {
-    @EnvironmentObject private var store: JournalStore
+private struct ProfileView: View {
+    @EnvironmentObject private var store: MarketplaceStore
 
-    let entryID: UUID
-    let onEdit: (JournalEntry) -> Void
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    profileCard
+
+                    HStack(spacing: 12) {
+                        StatTile(title: "Saved", value: "\(store.savedListings.count)", caption: "properties")
+                        StatTile(title: "Threads", value: "\(store.conversations.count)", caption: "owner chats")
+                        StatTile(title: "Offers", value: "\(store.offers.count)", caption: "tracked")
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("What this app is")
+                            .font(.headline)
+                        InformationalCard(text: "A private-sale marketplace, workflow, and communication layer for Australian residential property.")
+                        InformationalCard(text: "Not a law firm, conveyancer, escrow service, or trust account holder. Offers stay non-binding until valid contract execution.")
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Legal and help")
+                            .font(.headline)
+
+                        LinkRow(title: "Privacy policy", subtitle: "Live in-app link required for App Review", url: LegalLinks.privacy)
+                        LinkRow(title: "Terms of use", subtitle: "Marketplace and offer disclaimer draft", url: LegalLinks.terms)
+                        LinkRow(title: "Support", subtitle: "Help, bug reporting, and contact information", url: LegalLinks.support)
+                        LinkRow(title: "Product site", subtitle: "Overview of the current Real A Who experience", url: LegalLinks.home)
+                    }
+                }
+                .padding(20)
+            }
+            .background(Color(red: 0.97, green: 0.98, blue: 0.99).ignoresSafeArea())
+            .navigationTitle("Profile")
+        }
+    }
+
+    private var profileCard: some View {
+        HStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(red: 0.11, green: 0.36, blue: 0.52), Color(red: 0.25, green: 0.61, blue: 0.56)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                Image(systemName: "person.fill")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 72, height: 72)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Aaron Roper")
+                    .font(.title3.weight(.bold))
+
+                Text("Buyer and seller profile")
+                    .foregroundStyle(.secondary)
+
+                Label("Identity verification scaffolded", systemImage: "checkmark.seal.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+            }
+
+            Spacer()
+        }
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(.white)
+        )
+    }
+}
+
+private struct PropertyDetailView: View {
+    @EnvironmentObject private var store: MarketplaceStore
+    @Environment(\.dismiss) private var dismiss
+
+    let listingID: UUID
+
+    @State private var showingMessageSheet = false
+    @State private var showingOfferSheet = false
+    @State private var showingInspectionSheet = false
+    @State private var showingBuildingPestInfo = false
+    @State private var feedbackMessage: String?
+
+    private var listing: PropertyListing? {
+        store.listing(id: listingID)
+    }
 
     var body: some View {
         Group {
-            if let entry = store.entry(id: entryID) {
+            if let listing {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        detailHeader(for: entry)
-
-                        detailSection(title: "Prompt") {
-                            Text(entry.prompt)
-                                .font(.body)
-                        }
-
-                        detailSection(title: "Reflection") {
-                            Text(entry.body)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-
-                        if !entry.tags.isEmpty {
-                            detailSection(title: "Tags") {
-                                FlowLayout(spacing: 10) {
-                                    ForEach(entry.tags, id: \.self) { tag in
-                                        Text(tag)
-                                            .font(.subheadline.weight(.medium))
-                                            .padding(.horizontal, 14)
-                                            .padding(.vertical, 8)
-                                            .background(Color.indigo.opacity(0.12), in: Capsule())
-                                    }
-                                }
-                            }
-                        }
+                    VStack(alignment: .leading, spacing: 20) {
+                        hero(for: listing)
+                        keyFacts(for: listing)
+                        actionPanel(for: listing)
+                        documentPanel(for: listing)
+                        ownerPanel(for: listing)
+                        compliancePanel(for: listing)
+                        neighbourhoodPanel(for: listing)
                     }
                     .padding(20)
                 }
-                .background(Color(.systemGroupedBackground).ignoresSafeArea())
-                .navigationTitle(entry.displayTitle)
+                .background(Color(red: 0.97, green: 0.98, blue: 0.99).ignoresSafeArea())
+                .navigationTitle(listing.suburb)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        ShareLink(item: entry.shareText) {
-                            Label("Share", systemImage: "square.and.arrow.up")
-                        }
-
+                    ToolbarItem(placement: .topBarTrailing) {
                         Button {
-                            onEdit(entry)
+                            store.toggleSaved(listingID: listing.id)
                         } label: {
-                            Label("Edit", systemImage: "slider.horizontal.3")
+                            Image(systemName: store.isSaved(listing.id) ? "heart.fill" : "heart")
                         }
                     }
                 }
+                .sheet(isPresented: $showingMessageSheet) {
+                    MessageComposerView(listing: listing) { text in
+                        store.startConversation(for: listing.id, openingMessage: text)
+                        feedbackMessage = "Message sent to \(listing.sellerName)."
+                    }
+                }
+                .sheet(isPresented: $showingOfferSheet) {
+                    OfferComposerView(listing: listing) { amount, deposit, settlement, finance, building, pest, saleOfHome, note in
+                        store.submitOffer(
+                            listingID: listing.id,
+                            amount: amount,
+                            depositIntention: deposit,
+                            settlementDays: settlement,
+                            subjectToFinance: finance,
+                            subjectToBuildingInspection: building,
+                            subjectToPestInspection: pest,
+                            subjectToSaleOfHome: saleOfHome,
+                            buyerMessage: note
+                        )
+                        feedbackMessage = "Offer submitted as non-binding and ready for seller review."
+                    }
+                }
+                .sheet(isPresented: $showingInspectionSheet) {
+                    InspectionBookingView(listing: listing) { slotID, attendees in
+                        store.requestInspection(listingID: listing.id, slotID: slotID, attendees: attendees)
+                        feedbackMessage = "Inspection request recorded."
+                    }
+                }
+                .sheet(isPresented: $showingBuildingPestInfo) {
+                    BuildingPestInfoView(listing: listing)
+                }
+                .alert("Update", isPresented: Binding(get: { feedbackMessage != nil }, set: { if !$0 { feedbackMessage = nil } })) {
+                    Button("OK") {
+                        feedbackMessage = nil
+                    }
+                } message: {
+                    Text(feedbackMessage ?? "")
+                }
             } else {
-                ContentUnavailableView(
-                    "Reflection not found",
-                    systemImage: "exclamationmark.bubble",
-                    description: Text("This entry may have been deleted.")
-                )
+                ContentUnavailableView("Listing unavailable", systemImage: "exclamationmark.triangle", description: Text("This property could not be loaded."))
             }
         }
     }
 
-    private func detailHeader(for entry: JournalEntry) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                MoodBadge(mood: entry.mood)
+    private func hero(for listing: PropertyListing) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [listing.state.accentColor.opacity(0.90), listing.state.secondaryAccentColor],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(height: 240)
 
-                if entry.isFavorite {
-                    Label("Favorite", systemImage: "heart.fill")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.pink)
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        StatusBadge(title: listing.status.rawValue, accent: .white.opacity(0.25), foreground: .white)
+                        Spacer()
+                        Text(listing.state.rawValue)
+                            .font(.caption.weight(.bold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(.white.opacity(0.18)))
+                            .foregroundStyle(.white)
+                    }
+
+                    Spacer()
+
+                    Text(listing.priceGuide)
+                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                        .foregroundStyle(.white)
+
+                    Text(listing.heroTitle)
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(.white)
+
+                    Text("\(listing.addressLine), \(listing.locationLine)")
+                        .foregroundStyle(.white.opacity(0.88))
                 }
+                .padding(22)
             }
 
-            Text(entry.displayTitle)
-                .font(.system(.title2, design: .rounded, weight: .bold))
-
-            Text(entry.entryDate.formatted(date: .abbreviated, time: .omitted))
+            Text(listing.summary)
+                .font(.body)
                 .foregroundStyle(.secondary)
         }
-        .padding(20)
-        .background(.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
-    private func detailSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
+    private func keyFacts(for listing: PropertyListing) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Property snapshot")
                 .font(.headline)
 
-            content()
-                .foregroundStyle(.primary)
+            HStack(spacing: 12) {
+                FactBubble(value: "\(listing.bedrooms)", label: "Beds")
+                FactBubble(value: "\(listing.bathrooms)", label: "Baths")
+                FactBubble(value: "\(listing.parking)", label: "Cars")
+                FactBubble(value: listing.propertyType.rawValue, label: listing.saleMethod)
+            }
+
+            HStack(spacing: 12) {
+                InlineDetail(title: "Land", value: listing.landSize)
+                InlineDetail(title: "Building", value: listing.buildingSize)
+            }
         }
         .padding(20)
-        .background(.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(RoundedRectangle(cornerRadius: 24, style: .continuous).fill(.white))
+    }
+
+    private func actionPanel(for listing: PropertyListing) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Buyer actions")
+                .font(.headline)
+
+            Text("Offers in the app are non-binding until the right contract is executed for \(listing.state.title).")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                ActionButton(title: store.isSaved(listing.id) ? "Saved" : "Save property", systemImage: store.isSaved(listing.id) ? "heart.fill" : "heart") {
+                    store.toggleSaved(listingID: listing.id)
+                }
+
+                ActionButton(title: "Ask owner", systemImage: "bubble.left.and.bubble.right") {
+                    showingMessageSheet = true
+                }
+
+                ActionButton(title: "Book inspection", systemImage: "calendar.badge.plus") {
+                    showingInspectionSheet = true
+                }
+
+                ActionButton(title: "Request building & pest", systemImage: "doc.text.magnifyingglass") {
+                    showingBuildingPestInfo = true
+                }
+
+                ActionButton(title: "Make offer", systemImage: "banknote") {
+                    showingOfferSheet = true
+                }
+
+                Link(destination: LegalLinks.privacy) {
+                    Label("Privacy policy", systemImage: "lock.shield")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.black.opacity(0.05)))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.primary)
+            }
+        }
+        .padding(20)
+        .background(RoundedRectangle(cornerRadius: 24, style: .continuous).fill(.white))
+    }
+
+    private func documentPanel(for listing: PropertyListing) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Documents and disclosure")
+                .font(.headline)
+
+            ForEach(listing.documents) { document in
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: document.isRequired ? "doc.badge.gearshape.fill" : "doc.text.fill")
+                        .foregroundStyle(document.isRequired ? .orange : .blue)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(document.title)
+                                .font(.subheadline.weight(.semibold))
+                            if document.isRequired {
+                                Text("Required")
+                                    .font(.caption.weight(.bold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Capsule().fill(Color.orange.opacity(0.14)))
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                        Text(document.statusText)
+                            .foregroundStyle(.secondary)
+                        Text(document.provenance.rawValue)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Spacer()
+                }
+            }
+        }
+        .padding(20)
+        .background(RoundedRectangle(cornerRadius: 24, style: .continuous).fill(.white))
+    }
+
+    private func ownerPanel(for listing: PropertyListing) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Owner profile")
+                .font(.headline)
+
+            HStack(alignment: .top, spacing: 14) {
+                Circle()
+                    .fill(listing.state.accentColor.opacity(0.18))
+                    .frame(width: 54, height: 54)
+                    .overlay {
+                        Image(systemName: "house.fill")
+                            .foregroundStyle(listing.state.accentColor)
+                    }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(listing.sellerName)
+                            .font(.headline)
+                        if listing.sellerVerified {
+                            Label("Verified", systemImage: "checkmark.seal.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.green)
+                        }
+                    }
+
+                    Text("\(listing.responseRate)% response rate · average reply \(listing.averageResponseTime)")
+                        .foregroundStyle(.secondary)
+
+                    Text("What the owner loves: \(listing.whatOwnerLoves)")
+                        .font(.subheadline)
+                }
+            }
+        }
+        .padding(20)
+        .background(RoundedRectangle(cornerRadius: 24, style: .continuous).fill(.white))
+    }
+
+    private func compliancePanel(for listing: PropertyListing) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("State-aware legal workflow")
+                .font(.headline)
+
+            InformationalCard(text: listing.legalStatusText)
+            InformationalCard(text: listing.state.complianceSummary)
+            InformationalCard(text: listing.dueDiligencePrompt)
+        }
+        .padding(20)
+        .background(RoundedRectangle(cornerRadius: 24, style: .continuous).fill(.white))
+    }
+
+    private func neighbourhoodPanel(for listing: PropertyListing) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Features and neighbourhood")
+                .font(.headline)
+
+            FlowTagList(items: listing.features)
+            FlowTagList(items: listing.neighbourhoodHighlights, tint: listing.state.accentColor.opacity(0.12), foreground: listing.state.accentColor)
+        }
+        .padding(20)
+        .background(RoundedRectangle(cornerRadius: 24, style: .continuous).fill(.white))
     }
 }
 
-private struct EntryCard: View {
-    let entry: JournalEntry
+private struct ConversationDetailView: View {
+    @EnvironmentObject private var store: MarketplaceStore
+    let threadID: UUID
+
+    @State private var draft = ""
+
+    private var thread: ConversationThread? {
+        store.thread(id: threadID)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let thread {
+                        ForEach(thread.messages) { message in
+                            MessageBubble(message: message)
+                        }
+                    }
+                }
+                .padding(20)
+            }
+
+            HStack(spacing: 12) {
+                TextField("Reply to the owner", text: $draft, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...4)
+
+                Button("Send") {
+                    store.sendMessage(threadID: threadID, text: draft)
+                    draft = ""
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(16)
+            .background(.ultraThinMaterial)
+        }
+        .navigationTitle(thread?.participantName ?? "Conversation")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            store.markConversationRead(threadID: threadID)
+        }
+    }
+}
+
+private struct MessageComposerView: View {
+    @Environment(\.dismiss) private var dismiss
+    let listing: PropertyListing
+    let onSend: (String) -> Void
+
+    @State private var message = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Property") {
+                    Text(listing.heroTitle)
+                    Text(listing.locationLine)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Ask owner a question") {
+                    TextEditor(text: $message)
+                        .frame(minHeight: 180)
+
+                    Text("Contact details remain masked unless both sides choose to reveal them.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Message owner")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Send") {
+                        onSend(message)
+                        dismiss()
+                    }
+                    .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+}
+
+private struct OfferComposerView: View {
+    @Environment(\.dismiss) private var dismiss
+    let listing: PropertyListing
+    let onSubmit: (Int, String, Int, Bool, Bool, Bool, Bool, String) -> Void
+
+    @State private var amountText = ""
+    @State private var depositText = "5% on exchange"
+    @State private var settlementDays = 45
+    @State private var subjectToFinance = true
+    @State private var subjectToBuilding = true
+    @State private var subjectToPest = true
+    @State private var subjectToSale = false
+    @State private var message = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Offer summary") {
+                    Text(listing.heroTitle)
+                    TextField("Offer amount", text: $amountText)
+                        .keyboardType(.numberPad)
+                    TextField("Deposit intention", text: $depositText)
+                    Stepper("Settlement timeframe: \(settlementDays) days", value: $settlementDays, in: 14...120, step: 1)
+                }
+
+                Section("Conditions") {
+                    Toggle("Subject to finance", isOn: $subjectToFinance)
+                    Toggle("Subject to building inspection", isOn: $subjectToBuilding)
+                    Toggle("Subject to pest inspection", isOn: $subjectToPest)
+                    Toggle("Subject to sale of current home", isOn: $subjectToSale)
+                }
+
+                Section("Buyer note") {
+                    TextEditor(text: $message)
+                        .frame(minHeight: 150)
+                }
+
+                Section {
+                    Text("Important: this is a non-binding in-app offer only. A buyer is not committed to purchase and a seller is not committed to sell until a valid contract is formally executed in the legally correct way for the relevant Australian jurisdiction.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Make offer")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Submit") {
+                        if let amount = Int(amountText.filter(\.isNumber)) {
+                            onSubmit(amount, depositText, settlementDays, subjectToFinance, subjectToBuilding, subjectToPest, subjectToSale, message)
+                            dismiss()
+                        }
+                    }
+                    .disabled(Int(amountText.filter(\.isNumber)) == nil)
+                }
+            }
+        }
+    }
+}
+
+private struct InspectionBookingView: View {
+    @Environment(\.dismiss) private var dismiss
+    let listing: PropertyListing
+    let onSubmit: (UUID, Int) -> Void
+
+    @State private var selectedSlotID: UUID
+    @State private var attendees = 1
+
+    init(listing: PropertyListing, onSubmit: @escaping (UUID, Int) -> Void) {
+        self.listing = listing
+        self.onSubmit = onSubmit
+        _selectedSlotID = State(initialValue: listing.inspectionSlots.first?.id ?? UUID())
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Inspection options") {
+                    ForEach(listing.inspectionSlots) { slot in
+                        Button {
+                            selectedSlotID = slot.id
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(slot.title)
+                                        .foregroundStyle(.primary)
+                                    Text("\(slot.bookedCount)/\(slot.capacity) booked")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: selectedSlotID == slot.id ? "largecircle.fill.circle" : "circle")
+                                    .foregroundStyle(selectedSlotID == slot.id ? .blue : .secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Section("Attendees") {
+                    Stepper("People attending: \(attendees)", value: $attendees, in: 1...6)
+                }
+
+                Section {
+                    Text("Owner-managed inspections are recorded in-app so reminders, follow-ups, and attendance notes stay attached to the property thread.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Book inspection")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Request") {
+                        onSubmit(selectedSlotID, attendees)
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct BuildingPestInfoView: View {
+    @Environment(\.dismiss) private var dismiss
+    let listing: PropertyListing
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Building and pest flow") {
+                    Text("1. Review any seller-provided reports already attached to the listing.")
+                    Text("2. Request quotes or book your own inspector when you need fresh advice.")
+                    Text("3. Report reliance, insurance, and licence checks stay visible before booking.")
+                }
+
+                Section("For this property") {
+                    Text(listing.state == .act ? "ACT seller-provided report logic is supported here, including reimbursement metadata." : "Seller-provided reports and buyer-booked inspections can both be supported for this listing.")
+                    Text("The marketplace can coordinate bookings and document delivery, but it does not guarantee findings or replace independent due diligence.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Building & pest")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct ListingCard: View {
+    @EnvironmentObject private var store: MarketplaceStore
+    let listing: PropertyListing
+    let isSaved: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [listing.state.accentColor.opacity(0.92), listing.state.secondaryAccentColor.opacity(0.88)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(height: 190)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        StatusBadge(title: listing.status.rawValue, accent: .white.opacity(0.22), foreground: .white)
+                        Spacer()
+                        Button {
+                            store.toggleSaved(listingID: listing.id)
+                        } label: {
+                            Image(systemName: isSaved ? "heart.fill" : "heart")
+                                .padding(10)
+                                .background(Circle().fill(.white.opacity(0.18)))
+                        }
+                        .foregroundStyle(.white)
+                        .buttonStyle(.plain)
+                    }
+
+                    Spacer()
+
+                    Text(listing.priceGuide)
+                        .font(.title.weight(.bold))
+                        .foregroundStyle(.white)
+                    Text(listing.heroTitle)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white)
+                    Text(listing.locationLine)
+                        .foregroundStyle(.white.opacity(0.84))
+                }
+                .padding(18)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text(listing.headline)
+                    .font(.headline)
+
+                Text(listing.summary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+
+                HStack(spacing: 14) {
+                    Label("\(listing.bedrooms)", systemImage: "bed.double.fill")
+                    Label("\(listing.bathrooms)", systemImage: "shower.fill")
+                    Label("\(listing.parking)", systemImage: "car.fill")
+                    Label(listing.propertyType.rawValue, systemImage: "house.fill")
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 30, style: .continuous).fill(.white))
+    }
+}
+
+private struct OfferCard: View {
+    let offer: OfferRecord
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                MoodBadge(mood: entry.mood)
+                Text(offer.propertyTitle)
+                    .font(.headline)
+                    .lineLimit(2)
                 Spacer()
-                Text(entry.entryDate.formatted(date: .abbreviated, time: .omitted))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                StatusBadge(title: offer.status.rawValue, accent: offer.status.accentColor)
             }
 
-            Text(entry.displayTitle)
-                .font(.headline)
-                .foregroundStyle(.primary)
+            Text(currencyString(for: offer.amount))
+                .font(.title3.weight(.bold))
 
-            Text(entry.summary)
+            Text("Deposit: \(offer.depositIntention) · Settlement: \(offer.settlementDays) days")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
 
-            if !entry.tags.isEmpty {
-                Text(entry.tags.prefix(3).joined(separator: "  ·  "))
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.indigo)
-            }
+            Text(offer.buyerMessage)
+                .foregroundStyle(.secondary)
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(0.84), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.white))
+    }
+
+    private func currencyString(for amount: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "AUD"
+        formatter.maximumFractionDigits = 0
+        return formatter.string(from: NSNumber(value: amount)) ?? "$\(amount)"
     }
 }
 
-private struct EntryRow: View {
-    let entry: JournalEntry
+private struct MessageBubble: View {
+    let message: ConversationMessage
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .center, spacing: 6) {
-                Image(systemName: entry.mood.symbol)
-                    .font(.headline)
-                    .foregroundStyle(entry.mood.tint)
-                    .frame(width: 34, height: 34)
-                    .background(entry.mood.tint.opacity(0.16), in: Circle())
-
-                if entry.isFavorite {
-                    Image(systemName: "heart.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.pink)
-                }
-            }
+        HStack {
+            if message.isFromCurrentUser { Spacer(minLength: 36) }
 
             VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(entry.displayTitle)
-                        .font(.headline)
-                    Spacer()
-                    Text(entry.entryDate.formatted(date: .numeric, time: .omitted))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack {
+                    Text(message.senderName)
+                        .font(.caption.weight(.semibold))
+                    if message.isPinnedFAQ {
+                        Text("Pinned FAQ")
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.green.opacity(0.14)))
+                            .foregroundStyle(.green)
+                    }
                 }
 
-                Text(entry.summary)
-                    .font(.subheadline)
+                Text(message.body)
+                    .foregroundStyle(.primary)
+
+                Text(message.sentAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
-
-                if !entry.tags.isEmpty {
-                    Text(entry.tags.joined(separator: "  ·  "))
-                        .font(.caption)
-                        .foregroundStyle(.indigo)
-                        .lineLimit(1)
-                }
             }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(message.isFromCurrentUser ? Color(red: 0.89, green: 0.95, blue: 0.98) : .white)
+            )
+
+            if !message.isFromCurrentUser { Spacer(minLength: 36) }
         }
-        .padding(.vertical, 4)
     }
 }
 
-private struct MoodBadge: View {
-    let mood: ReflectionMood
+private struct SectionHeader: View {
+    let title: String
+    let subtitle: String
 
     var body: some View {
-        Label(mood.title, systemImage: mood.symbol)
-            .font(.subheadline.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(mood.tint.opacity(0.14), in: Capsule())
-            .foregroundStyle(mood.tint)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(.title2, design: .rounded, weight: .bold))
+            Text(subtitle)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
-private struct StatCard: View {
+private struct StatTile: View {
     let title: String
     let value: String
     let caption: String
-    let systemImage: String
-    let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.headline)
-                .foregroundStyle(tint)
-                .frame(width: 34, height: 34)
-                .background(tint.opacity(0.16), in: Circle())
-
+        VStack(alignment: .leading, spacing: 6) {
             Text(value)
-                .font(.system(.title2, design: .rounded, weight: .bold))
-
+                .font(.title2.weight(.bold))
             Text(title)
                 .font(.headline)
-
             Text(caption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .padding(18)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(0.84), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.white))
     }
 }
 
-private struct InsightMetric: View {
+private struct MetricPill: View {
     let title: String
     let value: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(value)
-                .font(.system(.title2, design: .rounded, weight: .bold))
+                .font(.headline.weight(.bold))
             Text(title)
-                .font(.subheadline)
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.indigo.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Capsule().fill(.white.opacity(0.78)))
     }
 }
 
-private struct MoodBreakdownRow: View {
-    let item: MoodBreakdownItem
-    let totalEntries: Int
+private struct FilterChip: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label(item.mood.title, systemImage: item.mood.symbol)
-                    .foregroundStyle(item.mood.tint)
-                Spacer()
-                Text("\(item.count)")
-                    .font(.subheadline.weight(.semibold))
-            }
-
-            GeometryReader { geometry in
-                let percentage = CGFloat(item.count) / CGFloat(totalEntries)
-
-                RoundedRectangle(cornerRadius: 999, style: .continuous)
-                    .fill(Color.black.opacity(0.06))
-                    .overlay(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 999, style: .continuous)
-                            .fill(item.mood.tint.gradient)
-                            .frame(width: max(24, geometry.size.width * percentage))
-                    }
-            }
-            .frame(height: 10)
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    Capsule()
+                        .fill(isSelected ? Color(red: 0.11, green: 0.36, blue: 0.52) : .white)
+                )
+                .foregroundStyle(isSelected ? .white : .primary)
         }
+        .buttonStyle(.plain)
     }
 }
 
-private struct FlowLayout: Layout {
-    let spacing: CGFloat
+private struct ActionButton: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
 
-    init(spacing: CGFloat = 8) {
-        self.spacing = spacing
-    }
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
-        var width: CGFloat = 0
-        var height: CGFloat = 0
-        var lineWidth: CGFloat = 0
-        var lineHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-
-            if lineWidth + size.width > maxWidth {
-                width = max(width, lineWidth)
-                height += lineHeight + spacing
-                lineWidth = size.width + spacing
-                lineHeight = size.height
-            } else {
-                lineWidth += size.width + spacing
-                lineHeight = max(lineHeight, size.height)
-            }
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color(red: 0.06, green: 0.17, blue: 0.25).opacity(0.05))
+                )
         }
-
-        width = max(width, lineWidth)
-        height += lineHeight
-
-        return CGSize(width: width, height: height)
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
     }
+}
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let maxWidth = bounds.width
-        var point = CGPoint(x: bounds.minX, y: bounds.minY)
-        var lineHeight: CGFloat = 0
+private struct EmptyStateCard: View {
+    let title: String
+    let message: String
 
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-
-            if point.x + size.width > bounds.minX + maxWidth {
-                point.x = bounds.minX
-                point.y += lineHeight + spacing
-                lineHeight = 0
+    var body: some View {
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .fill(.white)
+            .overlay(alignment: .leading) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(title)
+                        .font(.headline)
+                    Text(message)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(20)
             }
+            .frame(height: 140)
+    }
+}
 
-            subview.place(
-                at: point,
-                proposal: ProposedViewSize(width: size.width, height: size.height)
+private struct InformationalCard: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.subheadline)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.black.opacity(0.03))
             )
+    }
+}
 
-            point.x += size.width + spacing
-            lineHeight = max(lineHeight, size.height)
+private struct LinkRow: View {
+    let title: String
+    let subtitle: String
+    let url: URL
+
+    var body: some View {
+        Link(destination: url) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.right.square")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(18)
+            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.white))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct FactBubble: View {
+    let value: String
+    let label: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(value)
+                .font(.headline.weight(.bold))
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.black.opacity(0.04))
+        )
+    }
+}
+
+private struct InlineDetail: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.weight(.medium))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct FlowTagList: View {
+    let items: [String]
+    var tint: Color = Color(red: 0.05, green: 0.14, blue: 0.21).opacity(0.06)
+    var foreground: Color = .primary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(chunked(items, size: 3), id: \.self) { row in
+                HStack(alignment: .top, spacing: 10) {
+                    ForEach(row, id: \.self) { item in
+                        Text(item)
+                            .font(.subheadline.weight(.medium))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(Capsule().fill(tint))
+                            .foregroundStyle(foreground)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    private func chunked(_ items: [String], size: Int) -> [[String]] {
+        stride(from: 0, to: items.count, by: size).map {
+            Array(items[$0 ..< min($0 + size, items.count)])
         }
     }
 }
 
-private struct FilledButtonStyle: ButtonStyle {
-    let tint: Color
-    let foreground: Color
+private struct StatusBadge: View {
+    let title: String
+    let accent: Color
+    var foreground: Color = .primary
 
-    init(tint: Color, foreground: Color = .white) {
-        self.tint = tint
-        self.foreground = foreground
-    }
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.headline)
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.bold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(accent))
             .foregroundStyle(foreground)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
-            .background(tint.opacity(configuration.isPressed ? 0.75 : 1), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
-private extension Bundle {
-    var releaseVersionNumber: String? {
-        infoDictionary?["CFBundleShortVersionString"] as? String
-    }
-
-    var buildNumber: String? {
-        infoDictionary?["CFBundleVersion"] as? String
+private extension ListingStatus {
+    var accentColor: Color {
+        switch self {
+        case .active: return Color.green.opacity(0.16)
+        case .underOffer: return Color.orange.opacity(0.18)
+        case .acceptedInPrinciple: return Color.blue.opacity(0.16)
+        case .contractRequested: return Color.purple.opacity(0.14)
+        case .exchanged: return Color.indigo.opacity(0.16)
+        case .sold: return Color.gray.opacity(0.18)
+        }
     }
 }
 
-private enum LegalDocumentURL {
-    static let privacyPolicy = URL(string: "https://github.com/Roper8883/Real-A-Who/blob/main/docs/privacy-policy.md")!
-    static let termsOfUse = URL(string: "https://github.com/Roper8883/Real-A-Who/blob/main/docs/terms-of-use.md")!
-    static let support = URL(string: "https://github.com/Roper8883/Real-A-Who/blob/main/docs/support.md")!
+private extension OfferStatus {
+    var accentColor: Color {
+        switch self {
+        case .submitted: return Color.orange.opacity(0.16)
+        case .countered: return Color.blue.opacity(0.16)
+        case .acceptedInPrinciple: return Color.green.opacity(0.16)
+        case .contractRequested: return Color.purple.opacity(0.14)
+        case .expired: return Color.gray.opacity(0.18)
+        }
+    }
 }
 
-#Preview {
-    ContentView()
-        .environmentObject(JournalStore.preview)
+private extension AustralianState {
+    var accentColor: Color {
+        switch self {
+        case .nsw: return Color(red: 0.16, green: 0.39, blue: 0.65)
+        case .vic: return Color(red: 0.23, green: 0.41, blue: 0.75)
+        case .qld: return Color(red: 0.16, green: 0.55, blue: 0.48)
+        case .sa: return Color(red: 0.58, green: 0.24, blue: 0.41)
+        case .act: return Color(red: 0.26, green: 0.47, blue: 0.58)
+        case .nt: return Color(red: 0.61, green: 0.40, blue: 0.23)
+        case .wa: return Color(red: 0.34, green: 0.44, blue: 0.18)
+        case .tas: return Color(red: 0.35, green: 0.36, blue: 0.58)
+        }
+    }
+
+    var secondaryAccentColor: Color {
+        switch self {
+        case .nsw: return Color(red: 0.08, green: 0.27, blue: 0.43)
+        case .vic: return Color(red: 0.18, green: 0.30, blue: 0.54)
+        case .qld: return Color(red: 0.10, green: 0.41, blue: 0.36)
+        case .sa: return Color(red: 0.41, green: 0.15, blue: 0.28)
+        case .act: return Color(red: 0.17, green: 0.33, blue: 0.42)
+        case .nt: return Color(red: 0.43, green: 0.26, blue: 0.14)
+        case .wa: return Color(red: 0.22, green: 0.28, blue: 0.11)
+        case .tas: return Color(red: 0.22, green: 0.24, blue: 0.42)
+        }
+    }
 }
