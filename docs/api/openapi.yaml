@@ -1,0 +1,156 @@
+openapi: 3.1.0
+info:
+  title: Homeowner API
+  version: 0.1.0
+  description: >
+    API for an Australia-first private property sale platform. Offers are workflow
+    records only and are not binding unless a valid contract is executed outside
+    or through an approved legal process.
+servers:
+  - url: http://localhost:4000
+paths:
+  /health:
+    get:
+      summary: Service health
+      responses:
+        "200":
+          description: OK
+  /auth/signup:
+    post:
+      summary: Create an account
+      requestBody:
+        required: true
+      responses:
+        "201":
+          description: Account created
+  /auth/signin:
+    post:
+      summary: Sign in
+      requestBody:
+        required: true
+      responses:
+        "200":
+          description: Session tokens returned
+  /rules/{state}:
+    get:
+      summary: Get jurisdiction rule set
+      parameters:
+        - in: path
+          name: state
+          required: true
+          schema:
+            type: string
+            enum: [NSW, VIC, QLD, SA, ACT, NT, WA, TAS]
+      responses:
+        "200":
+          description: Rule set
+  /listings:
+    get:
+      summary: Search listings
+      parameters:
+        - in: query
+          name: state
+          schema:
+            type: string
+        - in: query
+          name: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Listing results
+    post:
+      summary: Create draft listing
+      responses:
+        "201":
+          description: Draft created
+  /listings/{slug}:
+    get:
+      summary: Get listing detail
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Listing detail
+        "404":
+          description: Not found
+  /saved-properties:
+    get:
+      summary: List saved properties
+      responses:
+        "200":
+          description: Saved properties
+    post:
+      summary: Save a property
+      responses:
+        "201":
+          description: Saved
+  /conversations:
+    get:
+      summary: List conversations
+      responses:
+        "200":
+          description: Conversations
+  /conversations/{conversationId}/messages:
+    post:
+      summary: Append a message
+      parameters:
+        - in: path
+          name: conversationId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Conversation updated
+  /inspection-bookings:
+    get:
+      summary: List inspection bookings
+      responses:
+        "200":
+          description: Inspection bookings
+    post:
+      summary: Create inspection booking request
+      responses:
+        "201":
+          description: Booking created
+  /offers:
+    get:
+      summary: List offer threads
+      responses:
+        "200":
+          description: Offer threads
+    post:
+      summary: Create offer thread
+      responses:
+        "201":
+          description: Offer thread created
+  /offers/{offerThreadId}/counter:
+    post:
+      summary: Counter an offer
+      parameters:
+        - in: path
+          name: offerThreadId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Offer thread updated
+  /service-providers:
+    get:
+      summary: List building and pest providers
+      responses:
+        "200":
+          description: Providers
+  /admin/metrics:
+    get:
+      summary: Get admin dashboard metrics
+      responses:
+        "200":
+          description: Metrics
+components: {}

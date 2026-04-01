@@ -1,0 +1,33 @@
+{
+  "name": "homeowner-platform",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:generate": "pnpm --filter @homeowner/db db:generate",
+    "db:migrate": "pnpm --filter @homeowner/db db:migrate",
+    "db:seed": "pnpm --filter @homeowner/db db:seed",
+    "dev:web": "pnpm --filter @homeowner/web dev",
+    "dev:admin": "pnpm --filter @homeowner/admin dev",
+    "dev:api": "pnpm --filter @homeowner/api dev"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.38.0",
+    "eslint": "^9.38.0",
+    "globals": "^16.4.0",
+    "prettier": "^3.6.2",
+    "turbo": "^2.5.8",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.1",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^3.2.4"
+  }
+}

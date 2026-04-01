@@ -1,0 +1,23 @@
+{
+  "name": "@homeowner/integrations",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@homeowner/config": "workspace:*",
+    "@homeowner/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.17",
+    "eslint": "^9.38.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

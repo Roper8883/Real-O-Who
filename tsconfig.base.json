@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "baseUrl": ".",
+    "paths": {
+      "@homeowner/auth": ["packages/auth/src/index.ts"],
+      "@homeowner/config": ["packages/config/src/index.ts"],
+      "@homeowner/db": ["packages/db/src/index.ts"],
+      "@homeowner/domain": ["packages/domain/src/index.ts"],
+      "@homeowner/integrations": ["packages/integrations/src/index.ts"],
+      "@homeowner/notifications": ["packages/notifications/src/index.ts"],
+      "@homeowner/search": ["packages/search/src/index.ts"],
+      "@homeowner/test-utils": ["packages/test-utils/src/index.ts"],
+      "@homeowner/types": ["packages/types/src/index.ts"],
+      "@homeowner/ui": ["packages/ui/src/index.ts"]
+    }
+  }
+}

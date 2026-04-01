@@ -1,0 +1,353 @@
+{
+  "country": "Australia",
+  "saleMethod": "private_treaty",
+  "states": [
+    {
+      "state": "NSW",
+      "disclosureSummary": "Contract of sale must be prepared before advertising. Pool, encumbrance, and certificate prompts are enforced where relevant.",
+      "coolingOff": {
+        "enabled": true,
+        "label": "NSW private treaty cooling-off",
+        "note": "Support exchange and cooling-off expiry milestones. Sellers must confirm contract prepared before publishing."
+      },
+      "publishingPrerequisites": [
+        "Seller confirms lawful authority to market the property.",
+        "Contract of sale prepared by legal representative before the listing can go live.",
+        "Pool compliance and defect disclosures captured where relevant."
+      ],
+      "requiredDocuments": [
+        {
+          "key": "contract",
+          "title": "Contract of sale",
+          "description": "Legal-prepared contract must exist before the property is advertised.",
+          "required": true,
+          "status": "required"
+        },
+        {
+          "key": "pool_certificate",
+          "title": "Pool compliance certificate",
+          "description": "Required when a pool or spa is present and certification is applicable.",
+          "required": false,
+          "status": "recommended"
+        }
+      ],
+      "inspectionGuidance": [
+        "Display open-home safety notes and access instructions.",
+        "Encourage buyers to review contract and certificates before offer escalation."
+      ],
+      "offerWarnings": [
+        "Offers are non-binding until a valid NSW contract is exchanged.",
+        "Cooling-off rights may apply to private treaty buyers."
+      ],
+      "settlementDefaults": {
+        "minDays": 21,
+        "maxDays": 90,
+        "defaultDays": 42
+      },
+      "featureFlags": {
+        "contractRequiredBeforePublish": true,
+        "supportsCoolingOffTimeline": true,
+        "supportsSellerProvidedReports": false
+      }
+    },
+    {
+      "state": "VIC",
+      "disclosureSummary": "Section 32 must be supplied before a buyer signs. Conditional private sale offers are supported.",
+      "coolingOff": {
+        "enabled": true,
+        "label": "Victoria private sale cooling-off",
+        "note": "Section 32 delivery should be tracked before progressing to contract."
+      },
+      "publishingPrerequisites": [
+        "Seller confirms lawful authority to market.",
+        "Section 32 vendor statement uploaded or marked in legal preparation."
+      ],
+      "requiredDocuments": [
+        {
+          "key": "section_32",
+          "title": "Section 32 vendor statement",
+          "description": "Required before any buyer signs a contract.",
+          "required": true,
+          "status": "required"
+        }
+      ],
+      "inspectionGuidance": [
+        "Make finance and building/pest offer conditions visible.",
+        "Prompt buyers to obtain legal review before formal signing."
+      ],
+      "offerWarnings": [
+        "Offers remain non-binding until a valid Victorian contract is signed.",
+        "Cooling-off rights differ by transaction context."
+      ],
+      "settlementDefaults": {
+        "minDays": 30,
+        "maxDays": 120,
+        "defaultDays": 60
+      },
+      "featureFlags": {
+        "contractRequiredBeforePublish": false,
+        "supportsCoolingOffTimeline": true,
+        "supportsSellerProvidedReports": false
+      }
+    },
+    {
+      "state": "QLD",
+      "disclosureSummary": "Seller disclosure statement and prescribed certificates must be given before the buyer signs. Delivery proof must be retained.",
+      "coolingOff": {
+        "enabled": true,
+        "label": "Queensland private treaty cooling-off",
+        "note": "Disclosure delivery receipts should be preserved for the transaction record."
+      },
+      "publishingPrerequisites": [
+        "Seller confirms authority to market.",
+        "Disclosure statement checklist completed with encumbrance, zoning, contamination, heritage, and pool prompts."
+      ],
+      "requiredDocuments": [
+        {
+          "key": "disclosure_bundle",
+          "title": "Seller disclosure bundle",
+          "description": "Bundle of prescribed disclosure statement and relevant certificates.",
+          "required": true,
+          "status": "required"
+        },
+        {
+          "key": "body_corporate",
+          "title": "Body corporate records",
+          "description": "Required when the property forms part of a body corporate or community titles scheme.",
+          "required": false,
+          "status": "recommended"
+        }
+      ],
+      "inspectionGuidance": [
+        "Show delivery receipts for disclosure documents to buyers and compliance staff.",
+        "Warn that inaccurate disclosure can affect contract rights."
+      ],
+      "offerWarnings": [
+        "Offers are non-binding until formal contract execution.",
+        "Queensland disclosure accuracy is important and may affect the buyer's rights."
+      ],
+      "settlementDefaults": {
+        "minDays": 21,
+        "maxDays": 90,
+        "defaultDays": 45
+      },
+      "featureFlags": {
+        "contractRequiredBeforePublish": false,
+        "supportsCoolingOffTimeline": true,
+        "supportsSellerProvidedReports": false
+      }
+    },
+    {
+      "state": "SA",
+      "disclosureSummary": "Form 1 workflow, amendment notice support, service-date tracking, and cooling-off countdown support are required.",
+      "coolingOff": {
+        "enabled": true,
+        "label": "South Australia cooling-off",
+        "note": "Countdown should commence from compliant service where applicable."
+      },
+      "publishingPrerequisites": [
+        "Seller confirms authority to market.",
+        "Form 1 preparation status captured."
+      ],
+      "requiredDocuments": [
+        {
+          "key": "form_1",
+          "title": "Form 1 vendor statement",
+          "description": "Capture service date and amendment notice metadata.",
+          "required": true,
+          "status": "required"
+        }
+      ],
+      "inspectionGuidance": [
+        "Track amendment notices and the date disclosure was served.",
+        "Allow compliance staff to request corrections before publish."
+      ],
+      "offerWarnings": [
+        "Offers remain non-binding until a valid contract is formed.",
+        "Cooling-off timing depends on compliant service of Form 1."
+      ],
+      "settlementDefaults": {
+        "minDays": 30,
+        "maxDays": 90,
+        "defaultDays": 45
+      },
+      "featureFlags": {
+        "contractRequiredBeforePublish": false,
+        "supportsCoolingOffTimeline": true,
+        "supportsSellerProvidedReports": false
+      }
+    },
+    {
+      "state": "ACT",
+      "disclosureSummary": "Draft contract and seller-provided building and pest reports are supported before sale. Reimbursement metadata can be tracked.",
+      "coolingOff": {
+        "enabled": true,
+        "label": "ACT cooling-off",
+        "note": "ACT reporting and contract package should be in place before marketing."
+      },
+      "publishingPrerequisites": [
+        "Draft contract is ready before offering the property for sale.",
+        "Building and compliance report workflow enabled.",
+        "Pest inspection workflow enabled."
+      ],
+      "requiredDocuments": [
+        {
+          "key": "contract",
+          "title": "Draft contract",
+          "description": "Required before the listing can go live.",
+          "required": true,
+          "status": "required"
+        },
+        {
+          "key": "building_report",
+          "title": "Building and compliance inspection report",
+          "description": "Seller-provided building report for ACT workflow.",
+          "required": true,
+          "status": "required"
+        },
+        {
+          "key": "pest_report",
+          "title": "Pest inspection report",
+          "description": "Seller-provided pest report with reimbursement metadata if applicable.",
+          "required": true,
+          "status": "required"
+        }
+      ],
+      "inspectionGuidance": [
+        "Enable buyer reimbursement metadata on reports when used.",
+        "Prominently show seller-provided inspection report provenance."
+      ],
+      "offerWarnings": [
+        "Offers are non-binding until contract execution.",
+        "ACT-specific contract and report package should be reviewed with legal advice."
+      ],
+      "settlementDefaults": {
+        "minDays": 30,
+        "maxDays": 90,
+        "defaultDays": 45
+      },
+      "featureFlags": {
+        "contractRequiredBeforePublish": true,
+        "supportsCoolingOffTimeline": true,
+        "supportsSellerProvidedReports": true
+      }
+    },
+    {
+      "state": "NT",
+      "disclosureSummary": "Approved contract-form placeholder and non-auction cooling-off support are included.",
+      "coolingOff": {
+        "enabled": true,
+        "label": "Northern Territory cooling-off",
+        "note": "Support private treaty progression from offer into contract request."
+      },
+      "publishingPrerequisites": [
+        "Seller confirms lawful authority to list.",
+        "Approved contract-form placeholder acknowledged."
+      ],
+      "requiredDocuments": [
+        {
+          "key": "contract",
+          "title": "Approved form contract placeholder",
+          "description": "Prepare to route to approved NT form before legal progression.",
+          "required": false,
+          "status": "recommended"
+        }
+      ],
+      "inspectionGuidance": [
+        "Prompt buyers to seek legal advice prior to formalising.",
+        "Keep non-binding offer language prominent."
+      ],
+      "offerWarnings": [
+        "Offers remain non-binding until the approved NT contract is executed."
+      ],
+      "settlementDefaults": {
+        "minDays": 21,
+        "maxDays": 90,
+        "defaultDays": 45
+      },
+      "featureFlags": {
+        "contractRequiredBeforePublish": false,
+        "supportsCoolingOffTimeline": true,
+        "supportsSellerProvidedReports": false
+      }
+    },
+    {
+      "state": "WA",
+      "disclosureSummary": "No statutory cooling-off by default. Finance, building, and sale-of-home conditions must be obvious.",
+      "coolingOff": {
+        "enabled": false,
+        "label": "No statutory cooling-off by default",
+        "note": "Offer builder should encourage clear conditional clauses and buyer legal review."
+      },
+      "publishingPrerequisites": [
+        "Seller confirms authority to market.",
+        "Condition and disclosure prompts completed."
+      ],
+      "requiredDocuments": [
+        {
+          "key": "contract",
+          "title": "Contract request pack",
+          "description": "Recommended before moving from accepted in principle to legal review.",
+          "required": false,
+          "status": "recommended"
+        }
+      ],
+      "inspectionGuidance": [
+        "Surface finance, building, pest, and sale-of-home clauses prominently."
+      ],
+      "offerWarnings": [
+        "Offers are non-binding unless and until a valid contract is executed.",
+        "There is no general statutory cooling-off period by default in WA."
+      ],
+      "settlementDefaults": {
+        "minDays": 21,
+        "maxDays": 90,
+        "defaultDays": 45
+      },
+      "featureFlags": {
+        "contractRequiredBeforePublish": false,
+        "supportsCoolingOffTimeline": false,
+        "supportsSellerProvidedReports": false
+      }
+    },
+    {
+      "state": "TAS",
+      "disclosureSummary": "Buyer-beware prompts are prominent. The platform should not imply disclosure duties beyond applicable law.",
+      "coolingOff": {
+        "enabled": false,
+        "label": "No statutory cooling-off by default",
+        "note": "Encourage buyer due diligence and professional advice."
+      },
+      "publishingPrerequisites": [
+        "Seller confirms lawful authority to market.",
+        "Buyer-beware and due diligence messaging enabled."
+      ],
+      "requiredDocuments": [
+        {
+          "key": "contract",
+          "title": "Contract request pack",
+          "description": "Recommended for progression into legal review.",
+          "required": false,
+          "status": "recommended"
+        }
+      ],
+      "inspectionGuidance": [
+        "Display due diligence prompts for title, planning, strata, and building condition."
+      ],
+      "offerWarnings": [
+        "Offers remain non-binding until formal contract execution.",
+        "Cooling-off is not generally available by default."
+      ],
+      "settlementDefaults": {
+        "minDays": 21,
+        "maxDays": 90,
+        "defaultDays": 42
+      },
+      "featureFlags": {
+        "contractRequiredBeforePublish": false,
+        "supportsCoolingOffTimeline": false,
+        "supportsSellerProvidedReports": false
+      }
+    }
+  ]
+}

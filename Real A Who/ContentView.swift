@@ -1471,3 +1471,8 @@ private extension AustralianState {
         }
     }
 }
+
+#Preview {
+    ContentView()
+        .environmentObject(MarketplaceStore())
+}
