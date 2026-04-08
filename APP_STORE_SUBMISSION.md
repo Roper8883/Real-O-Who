@@ -17,10 +17,10 @@ This project is now set up as a private property marketplace prototype for direc
 
 ## Public URLs
 
-- Website: `https://roper8883.github.io/Real-A-Who/real-o-who/`
-- Privacy Policy: `https://roper8883.github.io/Real-A-Who/real-o-who/privacy-policy/`
-- Terms of Use: `https://roper8883.github.io/Real-A-Who/real-o-who/terms-of-use/`
-- Support: `https://roper8883.github.io/Real-A-Who/real-o-who/support/`
+- Website: `https://roper8883.github.io/Real-O-Who/real-o-who/`
+- Privacy Policy: `https://roper8883.github.io/Real-O-Who/real-o-who/privacy-policy/`
+- Terms of Use: `https://roper8883.github.io/Real-O-Who/real-o-who/terms-of-use/`
+- Support: `https://roper8883.github.io/Real-O-Who/real-o-who/support/`
 
 ## Suggested App Review Notes
 

@@ -1,15 +1,18 @@
 import Combine
+import CryptoKit
 import Foundation
 
 @MainActor
 final class MarketplaceStore: ObservableObject {
     @Published private(set) var users: [UserProfile] = MarketplaceSeed.users
+    @Published private(set) var authAccounts: [LocalAuthAccount] = []
     @Published private(set) var listings: [PropertyListing] = MarketplaceSeed.listings()
     @Published private(set) var savedSearches: [SavedSearch] = MarketplaceSeed.savedSearches
     @Published private(set) var favoriteListingIDs: Set<UUID> = []
     @Published private(set) var plannedInspectionIDs: Set<UUID> = MarketplaceSeed.plannedInspectionIDs
     @Published private(set) var offers: [OfferRecord] = []
     @Published var currentUserID: UUID = MarketplaceSeed.buyerOliviaID
+    @Published private(set) var sessionUserID: UUID?
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -56,6 +59,14 @@ final class MarketplaceStore: ObservableObject {
 
     var currentUser: UserProfile {
         users.first(where: { $0.id == currentUserID }) ?? users[0]
+    }
+
+    var isAuthenticated: Bool {
+        isEphemeral || sessionUserID != nil
+    }
+
+    var currentAccount: LocalAuthAccount? {
+        account(for: currentUserID)
     }
 
     var buyers: [UserProfile] {
@@ -109,6 +120,10 @@ final class MarketplaceStore: ObservableObject {
 
     func user(id: UUID) -> UserProfile? {
         users.first { $0.id == id }
+    }
+
+    func account(for userID: UUID) -> LocalAuthAccount? {
+        authAccounts.first { $0.userID == userID }
     }
 
     func listing(id: UUID) -> PropertyListing? {
@@ -191,6 +206,108 @@ final class MarketplaceStore: ObservableObject {
 
     func setCurrentUser(_ userID: UUID) {
         currentUserID = userID
+        persist()
+    }
+
+    func signIn(email: String, password: String) throws {
+        let normalizedEmail = Self.normalizedEmail(email)
+        guard Self.isValidEmail(normalizedEmail) else {
+            throw MarketplaceAuthError.invalidEmail
+        }
+
+        guard let index = authAccounts.firstIndex(where: { $0.email == normalizedEmail }) else {
+            throw MarketplaceAuthError.accountNotFound
+        }
+
+        let account = authAccounts[index]
+        guard let salt = Data(base64Encoded: account.passwordSaltBase64),
+              let storedHash = Data(base64Encoded: account.passwordHashBase64) else {
+            throw MarketplaceAuthError.accountUnavailable
+        }
+
+        let passwordHash = Self.hashedPassword(password, salt: salt)
+        guard passwordHash == storedHash else {
+            throw MarketplaceAuthError.incorrectPassword
+        }
+
+        guard let user = user(id: account.userID) else {
+            throw MarketplaceAuthError.accountUnavailable
+        }
+
+        authAccounts[index].lastSignedInAt = .now
+        currentUserID = user.id
+        sessionUserID = user.id
+        persist()
+    }
+
+    @discardableResult
+    func createAccount(
+        name: String,
+        email: String,
+        password: String,
+        role: UserRole,
+        suburb: String
+    ) throws -> UserProfile {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSuburb = suburb.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedEmail = Self.normalizedEmail(email)
+
+        guard trimmedName.split(separator: " ").count >= 2 else {
+            throw MarketplaceAuthError.invalidName
+        }
+
+        guard Self.isValidEmail(normalizedEmail) else {
+            throw MarketplaceAuthError.invalidEmail
+        }
+
+        guard trimmedSuburb.count >= 2 else {
+            throw MarketplaceAuthError.invalidSuburb
+        }
+
+        guard password.count >= 8 else {
+            throw MarketplaceAuthError.weakPassword
+        }
+
+        guard !authAccounts.contains(where: { $0.email == normalizedEmail }) else {
+            throw MarketplaceAuthError.emailTaken
+        }
+
+        let user = UserProfile(
+            id: UUID(),
+            name: trimmedName,
+            role: role,
+            suburb: trimmedSuburb,
+            headline: role == .seller
+                ? "Selling privately and keeping more of the final sale."
+                : "Looking to buy directly from owners without agent friction.",
+            verificationNote: role == .seller
+                ? "Private seller account created on this device"
+                : "Buyer account created on this device",
+            buyerStage: role == .buyer ? .browsing : nil
+        )
+
+        let salt = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
+        let passwordHash = Self.hashedPassword(password, salt: salt)
+        let account = LocalAuthAccount(
+            id: UUID(),
+            userID: user.id,
+            email: normalizedEmail,
+            passwordSaltBase64: salt.base64EncodedString(),
+            passwordHashBase64: passwordHash.base64EncodedString(),
+            createdAt: .now,
+            lastSignedInAt: .now
+        )
+
+        users.insert(user, at: 0)
+        authAccounts.insert(account, at: 0)
+        currentUserID = user.id
+        sessionUserID = user.id
+        persist()
+        return user
+    }
+
+    func signOut() {
+        sessionUserID = nil
         persist()
     }
 
@@ -358,12 +475,20 @@ final class MarketplaceStore: ObservableObject {
             let data = try Data(contentsOf: fileURL)
             let snapshot = try decoder.decode(MarketplaceSnapshot.self, from: data)
             users = snapshot.users
+            authAccounts = snapshot.authAccounts
             listings = snapshot.listings
             savedSearches = snapshot.savedSearches
             favoriteListingIDs = snapshot.favoriteListingIDs
             plannedInspectionIDs = snapshot.plannedInspectionIDs
             offers = snapshot.offers
             currentUserID = snapshot.currentUserID
+            sessionUserID = snapshot.sessionUserID
+
+            if let sessionUserID, users.contains(where: { $0.id == sessionUserID }) {
+                currentUserID = sessionUserID
+            } else if !users.contains(where: { $0.id == currentUserID }), let firstUser = users.first {
+                currentUserID = firstUser.id
+            }
         } catch {
             assertionFailure("Failed to load marketplace state: \(error.localizedDescription)")
         }
@@ -381,12 +506,14 @@ final class MarketplaceStore: ObservableObject {
 
             let snapshot = MarketplaceSnapshot(
                 users: users,
+                authAccounts: authAccounts,
                 listings: listings,
                 savedSearches: savedSearches,
                 favoriteListingIDs: favoriteListingIDs,
                 plannedInspectionIDs: plannedInspectionIDs,
                 offers: offers,
-                currentUserID: currentUserID
+                currentUserID: currentUserID,
+                sessionUserID: sessionUserID
             )
 
             let data = try encoder.encode(snapshot)
@@ -394,6 +521,22 @@ final class MarketplaceStore: ObservableObject {
         } catch {
             assertionFailure("Failed to persist marketplace state: \(error.localizedDescription)")
         }
+    }
+
+    private static func normalizedEmail(_ email: String) -> String {
+        email
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private static func isValidEmail(_ email: String) -> Bool {
+        email.contains("@") && email.contains(".")
+    }
+
+    private static func hashedPassword(_ password: String, salt: Data) -> Data {
+        let combined = salt + Data(password.utf8)
+        let digest = SHA256.hash(data: combined)
+        return Data(digest)
     }
 }
 
@@ -406,12 +549,49 @@ struct SellerDashboardStats {
 
 private struct MarketplaceSnapshot: Codable {
     var users: [UserProfile]
+    var authAccounts: [LocalAuthAccount]
     var listings: [PropertyListing]
     var savedSearches: [SavedSearch]
     var favoriteListingIDs: Set<UUID>
     var plannedInspectionIDs: Set<UUID>
     var offers: [OfferRecord]
     var currentUserID: UUID
+    var sessionUserID: UUID?
+
+    init(
+        users: [UserProfile],
+        authAccounts: [LocalAuthAccount],
+        listings: [PropertyListing],
+        savedSearches: [SavedSearch],
+        favoriteListingIDs: Set<UUID>,
+        plannedInspectionIDs: Set<UUID>,
+        offers: [OfferRecord],
+        currentUserID: UUID,
+        sessionUserID: UUID?
+    ) {
+        self.users = users
+        self.authAccounts = authAccounts
+        self.listings = listings
+        self.savedSearches = savedSearches
+        self.favoriteListingIDs = favoriteListingIDs
+        self.plannedInspectionIDs = plannedInspectionIDs
+        self.offers = offers
+        self.currentUserID = currentUserID
+        self.sessionUserID = sessionUserID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        users = try container.decode([UserProfile].self, forKey: .users)
+        authAccounts = try container.decodeIfPresent([LocalAuthAccount].self, forKey: .authAccounts) ?? []
+        listings = try container.decode([PropertyListing].self, forKey: .listings)
+        savedSearches = try container.decode([SavedSearch].self, forKey: .savedSearches)
+        favoriteListingIDs = try container.decode(Set<UUID>.self, forKey: .favoriteListingIDs)
+        plannedInspectionIDs = try container.decode(Set<UUID>.self, forKey: .plannedInspectionIDs)
+        offers = try container.decode([OfferRecord].self, forKey: .offers)
+        currentUserID = try container.decode(UUID.self, forKey: .currentUserID)
+        sessionUserID = try container.decodeIfPresent(UUID.self, forKey: .sessionUserID)
+    }
 }
 
 private extension Collection {

@@ -83,10 +83,10 @@ private enum class EntryFilter(val title: String) {
 }
 
 private object LegalLinks {
-    const val HOME = "https://roper8883.github.io/Real-A-Who/real-o-who/"
-    const val PRIVACY = "https://roper8883.github.io/Real-A-Who/real-o-who/privacy-policy/"
-    const val TERMS = "https://roper8883.github.io/Real-A-Who/real-o-who/terms-of-use/"
-    const val SUPPORT = "https://roper8883.github.io/Real-A-Who/real-o-who/support/"
+    const val HOME = "https://roper8883.github.io/Real-O-Who/real-o-who/"
+    const val PRIVACY = "https://roper8883.github.io/Real-O-Who/real-o-who/privacy-policy/"
+    const val TERMS = "https://roper8883.github.io/Real-O-Who/real-o-who/terms-of-use/"
+    const val SUPPORT = "https://roper8883.github.io/Real-O-Who/real-o-who/support/"
     const val MAIL = "mailto:aroper8@hotmail.com"
 }
 

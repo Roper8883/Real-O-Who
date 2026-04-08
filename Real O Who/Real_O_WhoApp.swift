@@ -14,10 +14,15 @@ struct Real_O_WhoApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            Group {
+                if store.isAuthenticated {
+                    ContentView()
+                } else {
+                    AuthenticationView()
+                }
+            }
                 .environmentObject(store)
                 .environmentObject(messaging)
         }
     }
 }
-

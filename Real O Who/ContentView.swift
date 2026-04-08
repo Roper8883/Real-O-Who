@@ -36,10 +36,10 @@ private struct SearchFilters {
 }
 
 private enum LegalLinks {
-    static let home = URL(string: "https://roper8883.github.io/Real-A-Who/real-o-who/")!
-    static let privacy = URL(string: "https://roper8883.github.io/Real-A-Who/real-o-who/privacy-policy/")!
-    static let terms = URL(string: "https://roper8883.github.io/Real-A-Who/real-o-who/terms-of-use/")!
-    static let support = URL(string: "https://roper8883.github.io/Real-A-Who/real-o-who/support/")!
+    static let home = URL(string: "https://roper8883.github.io/Real-O-Who/real-o-who/")!
+    static let privacy = URL(string: "https://roper8883.github.io/Real-O-Who/real-o-who/privacy-policy/")!
+    static let terms = URL(string: "https://roper8883.github.io/Real-O-Who/real-o-who/terms-of-use/")!
+    static let support = URL(string: "https://roper8883.github.io/Real-O-Who/real-o-who/support/")!
     static let mail = URL(string: "mailto:aroper8@hotmail.com")!
 }
 
@@ -602,11 +602,11 @@ private struct AccountView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     SectionHeader(
                         title: "Account",
-                        subtitle: "Switch buyer and seller personas to test the owner-first private sale journey."
+                        subtitle: "Manage the local account that unlocks the private-sale journey on this device."
                     )
 
                     brandPromise
-                    profileSwitcher
+                    currentAccountCard
                     marketplaceArchitecture
                     legalLinks
                 }
@@ -642,20 +642,38 @@ private struct AccountView: View {
         )
     }
 
-    private var profileSwitcher: some View {
+    private var currentAccountCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Personas")
+            Text("Signed in account")
                 .font(.headline)
 
-            ForEach(store.users) { user in
-                Button {
-                    store.setCurrentUser(user.id)
-                } label: {
-                    PersonaCard(user: user, isSelected: store.currentUserID == user.id)
+            PersonaCard(user: store.currentUser, isSelected: true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                if let account = store.currentAccount {
+                    Text(account.redactedEmail)
+                        .font(.subheadline.weight(.semibold))
                 }
-                .buttonStyle(.plain)
+
+                Text(
+                    store.currentUser.role == .seller
+                        ? "Seller tools are unlocked, so you can create listings and manage offers."
+                        : "Buyer tools are unlocked, so you can shortlist homes, plan inspections, and message owners."
+                )
+                .foregroundStyle(.secondary)
             }
+
+            Button("Sign Out") {
+                store.signOut()
+            }
+            .buttonStyle(.bordered)
         }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(.white)
+        )
     }
 
     private var marketplaceArchitecture: some View {
@@ -687,6 +705,10 @@ private struct AccountView: View {
                 FeatureTile(
                     title: "Service boundary",
                     subtitle: "Listings and messaging are isolated so a hosted E2EE backend can be dropped in later."
+                )
+                FeatureTile(
+                    title: "Local launch auth",
+                    subtitle: "Sign-in state and account details are persisted locally until a hosted auth backend is added."
                 )
             }
         }
