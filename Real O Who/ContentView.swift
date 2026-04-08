@@ -43,6 +43,18 @@ private enum LegalLinks {
     static let mail = URL(string: "mailto:aroper8@hotmail.com")!
 }
 
+private enum BrandPalette {
+    static let navy = Color(red: 0.04, green: 0.22, blue: 0.32)
+    static let teal = Color(red: 0.10, green: 0.58, blue: 0.57)
+    static let sky = Color(red: 0.39, green: 0.80, blue: 0.93)
+    static let gold = Color(red: 1.0, green: 0.78, blue: 0.30)
+    static let coral = Color(red: 1.0, green: 0.39, blue: 0.35)
+    static let background = Color(red: 0.95, green: 0.98, blue: 1.0)
+    static let panel = Color(red: 0.98, green: 0.99, blue: 1.0)
+    static let pill = Color(red: 0.91, green: 0.96, blue: 0.98)
+    static let selection = Color(red: 0.88, green: 0.95, blue: 0.98)
+}
+
 struct ContentView: View {
     @State private var selectedTab: AppTab
     @State private var selectedConversationID: UUID?
@@ -94,7 +106,7 @@ struct ContentView: View {
                 }
                 .tag(AppTab.account)
         }
-        .tint(Color(red: 0.11, green: 0.34, blue: 0.56))
+        .tint(.accentColor)
     }
 }
 
@@ -122,7 +134,7 @@ private struct BrowseView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
+                ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     heroCard
                     searchPanel
@@ -131,8 +143,8 @@ private struct BrowseView: View {
                 }
                 .padding(20)
             }
-            .background(Color(red: 0.96, green: 0.97, blue: 0.99).ignoresSafeArea())
-            .navigationTitle("Private Property")
+            .background(BrandPalette.background.ignoresSafeArea())
+            .navigationTitle("Real O Who")
             .sheet(item: $selectedListing) { listing in
                 ListingDetailView(
                     listingID: listing.id,
@@ -163,12 +175,27 @@ private struct BrowseView: View {
     }
 
     private var heroCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Modeled on Australia’s leading property journeys.")
-                .font(.system(.title2, design: .rounded, weight: .bold))
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 16) {
+                BrandLockup(inverse: true)
+                Spacer(minLength: 12)
+                Text("No % commission")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(BrandPalette.navy)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(0.9))
+                    )
+            }
 
-            Text("Search-first discovery, suburb insight, inspection planning, direct offers, and secure buyer-seller messaging built for private listings.")
-                .foregroundStyle(.secondary)
+            Text("Sell smart. Keep more of your sale.")
+                .font(.system(.title, design: .rounded, weight: .bold))
+                .foregroundStyle(.white)
+
+            Text("A private property app for everyday homeowners: browse, shortlist, message directly, run inspections, and negotiate without handing away a big agent fee.")
+                .foregroundStyle(Color.white.opacity(0.88))
 
             HStack(spacing: 12) {
                 MetricBadge(title: "Listings", value: "\(store.activeListings.count)")
@@ -183,13 +210,18 @@ private struct BrowseView: View {
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color(red: 0.85, green: 0.92, blue: 0.98),
-                            Color(red: 0.92, green: 0.94, blue: 0.88)
+                            BrandPalette.navy,
+                            BrandPalette.teal,
+                            BrandPalette.sky
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
                 )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(Color.white.opacity(0.16), lineWidth: 1)
         )
     }
 
@@ -354,7 +386,7 @@ private struct SavedView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     SectionHeader(
                         title: "Saved",
-                        subtitle: "Shortlist homes, watch suburbs, and keep inspections in one place."
+                        subtitle: "Shortlist homes, watch suburbs, and keep inspections in one place while you buy without agent friction."
                     )
 
                     VStack(alignment: .leading, spacing: 12) {
@@ -411,7 +443,7 @@ private struct SavedView: View {
                 }
                 .padding(20)
             }
-            .background(Color(red: 0.96, green: 0.97, blue: 0.99).ignoresSafeArea())
+            .background(BrandPalette.background.ignoresSafeArea())
             .navigationTitle("Watchlist")
             .sheet(item: $selectedListing) { listing in
                 ListingDetailView(
@@ -439,7 +471,7 @@ private struct SellView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     SectionHeader(
                         title: "Seller Hub",
-                        subtitle: "Run a private sale with owner insights, direct offers, and inspection control."
+                        subtitle: "Run a private sale with owner tools, direct offers, and more money staying in your pocket."
                     )
 
                     if store.currentUser.role != .seller {
@@ -452,7 +484,7 @@ private struct SellView: View {
                 }
                 .padding(20)
             }
-            .background(Color(red: 0.96, green: 0.97, blue: 0.99).ignoresSafeArea())
+            .background(BrandPalette.background.ignoresSafeArea())
             .navigationTitle("Sell Privately")
             .toolbar {
                 if store.currentUser.role == .seller {
@@ -541,7 +573,7 @@ private struct MessagesView: View {
                     }
                 }
             }
-            .navigationTitle("Encrypted Chat")
+            .navigationTitle("Secure Messages")
         } detail: {
             if let selectedConversationID,
                messaging.thread(id: selectedConversationID) != nil {
@@ -570,18 +602,44 @@ private struct AccountView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     SectionHeader(
                         title: "Account",
-                        subtitle: "Switch buyer and seller personas to test both sides of the private sale journey."
+                        subtitle: "Switch buyer and seller personas to test the owner-first private sale journey."
                     )
 
+                    brandPromise
                     profileSwitcher
                     marketplaceArchitecture
                     legalLinks
                 }
                 .padding(20)
             }
-            .background(Color(red: 0.96, green: 0.97, blue: 0.99).ignoresSafeArea())
+            .background(BrandPalette.background.ignoresSafeArea())
             .navigationTitle("Account")
         }
+    }
+
+    private var brandPromise: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            BrandLockup()
+            Text("Built for regular people selling a home privately and wanting the relationship, the negotiation, and the upside to stay direct.")
+                .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                InfoPill(label: "Owner-first")
+                InfoPill(label: "Direct buyer chat")
+                InfoPill(label: "Keep more")
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white, BrandPalette.panel],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
     }
 
     private var profileSwitcher: some View {
@@ -678,7 +736,7 @@ private struct ListingDetailView: View {
                         }
                         .padding(20)
                     }
-                    .background(Color(red: 0.96, green: 0.97, blue: 0.99).ignoresSafeArea())
+                    .background(BrandPalette.background.ignoresSafeArea())
                     .navigationTitle(listing.address.suburb)
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
@@ -805,7 +863,7 @@ private struct ListingDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color(red: 0.98, green: 0.99, blue: 1.0))
+                        .fill(BrandPalette.panel)
                 )
             }
         }
@@ -909,7 +967,7 @@ private struct ListingDetailView: View {
                     .padding(16)
                     .background(
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(Color(red: 0.98, green: 0.99, blue: 1.0))
+                            .fill(BrandPalette.panel)
                     )
                 }
             }
@@ -965,7 +1023,7 @@ private struct ConversationThreadView: View {
                         }
                         .padding(20)
                     }
-                    .background(Color(red: 0.96, green: 0.97, blue: 0.99))
+                    .background(BrandPalette.background)
                     .onAppear {
                         proxy.scrollTo(thread.messages.last?.id, anchor: .bottom)
                     }
@@ -1252,7 +1310,7 @@ private struct SellerListingCard: View {
                     .padding(.vertical, 6)
                     .background(
                         Capsule()
-                            .fill(Color(red: 0.88, green: 0.93, blue: 0.98))
+                            .fill(BrandPalette.selection)
                     )
             }
 
@@ -1340,7 +1398,7 @@ private struct PersonaCard: View {
         HStack(spacing: 14) {
             ZStack {
                 Circle()
-                    .fill(isSelected ? Color(red: 0.11, green: 0.34, blue: 0.56) : Color.white)
+                    .fill(isSelected ? BrandPalette.navy : Color.white)
                     .frame(width: 52, height: 52)
                 Text(user.initials)
                     .font(.headline.weight(.bold))
@@ -1361,7 +1419,7 @@ private struct PersonaCard: View {
         .padding(18)
         .background(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(isSelected ? Color(red: 0.88, green: 0.93, blue: 0.98) : .white)
+                .fill(isSelected ? BrandPalette.selection : .white)
         )
     }
 }
@@ -1400,14 +1458,21 @@ private struct ConversationHeader: View {
     let encryptionLabel: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(listing.title)
-                .font(.headline)
-            Text(counterpart.map { "Talking with \($0.name)" } ?? "Secure property conversation")
-                .foregroundStyle(.secondary)
-            Label(encryptionLabel, systemImage: "lock.shield.fill")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 14) {
+            Image("BrandMark")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 40, height: 40)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(listing.title)
+                    .font(.headline)
+                Text(counterpart.map { "Talking with \($0.name)" } ?? "Secure property conversation")
+                    .foregroundStyle(.secondary)
+                Label(encryptionLabel, systemImage: "lock.shield.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1450,10 +1515,10 @@ private struct MessageBubble: View {
 
     private var bubbleColor: Color {
         if message.isSystem {
-            return Color(red: 0.92, green: 0.95, blue: 0.98)
+            return BrandPalette.pill
         }
 
-        return isCurrentUser ? Color(red: 0.11, green: 0.34, blue: 0.56) : .white
+        return isCurrentUser ? BrandPalette.navy : .white
     }
 
     private var messageTextColor: Color {
@@ -1504,11 +1569,46 @@ private struct SectionHeader: View {
     let subtitle: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image("BrandMark")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 26, height: 26)
+
+                Text("REAL O WHO")
+                    .font(.caption.weight(.black))
+                    .foregroundStyle(BrandPalette.navy)
+                    .tracking(1.1)
+            }
             Text(title)
                 .font(.system(.title2, design: .rounded, weight: .bold))
             Text(subtitle)
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct BrandLockup: View {
+    var inverse = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image("BrandMark")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 52, height: 52)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Real O Who")
+                    .font(.system(.title3, design: .rounded, weight: .bold))
+                    .foregroundStyle(inverse ? .white : BrandPalette.navy)
+
+                Text("Private property. More money stays with you.")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(inverse ? Color.white.opacity(0.82) : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -1531,7 +1631,7 @@ private struct HighlightInformationCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color(red: 0.98, green: 0.99, blue: 1.0))
+                .fill(BrandPalette.panel)
         )
     }
 }
@@ -1608,7 +1708,7 @@ private struct SelectableChip: View {
             .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(isSelected ? Color(red: 0.11, green: 0.34, blue: 0.56) : Color.white)
+                    .fill(isSelected ? BrandPalette.teal : Color.white)
             )
     }
 }
@@ -1623,7 +1723,7 @@ private struct InfoPill: View {
             .padding(.vertical, 6)
             .background(
                 Capsule()
-                    .fill(Color(red: 0.91, green: 0.95, blue: 0.98))
+                    .fill(BrandPalette.pill)
             )
     }
 }
