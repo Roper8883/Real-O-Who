@@ -60,6 +60,19 @@ Review-critical controls:
 - Review flow transparency: no authentication gate blocks onboarding.
 - Content policy: no adult/inappropriate external content is intentionally included in seed data.
 
+## Submission copy and metadata
+
+- Copy for App Store Connect fields, review notes, and screenshot labels is now maintained in
+  - `APP_STORE_CONNECT_UPLOAD_TEXT.md`
+- Suggested review order:
+  1. Open app
+  2. Tap `Continue now`
+  3. Browse listing flow
+  4. Use Messages and secure messaging moderation menu
+  5. Open legal workspace and verify contract packet handoff
+  6. Confirm Account area links: support/privacy/terms/delete account
+- Reuse the exact copy above to keep App Store text and demo credentials consistent with the build.
+
 ## Icon guideline verification (this build)
 
 - Xcode is configured to use `AppIcon` via `ASSETCATALOG_COMPILER_APPICON_NAME` in both Debug and Release settings.
