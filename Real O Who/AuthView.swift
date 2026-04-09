@@ -22,8 +22,47 @@ private enum AuthLinks {
     static let support = URL(string: "https://roper8883.github.io/Real-O-Who/real-o-who/support/")!
 }
 
+private enum DemoAccessAccount: String, CaseIterable, Identifiable {
+    case buyer
+    case seller
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .buyer:
+            return "Demo Buyer"
+        case .seller:
+            return "Demo Seller"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .buyer:
+            return "Noah Chen"
+        case .seller:
+            return "Mason Wright"
+        }
+    }
+
+    var email: String {
+        switch self {
+        case .buyer:
+            return "noah@realowho.app"
+        case .seller:
+            return "mason@realowho.app"
+        }
+    }
+
+    var password: String {
+        "HouseDeal123!"
+    }
+}
+
 struct AuthenticationView: View {
     @EnvironmentObject private var store: MarketplaceStore
+    @EnvironmentObject private var messaging: EncryptedMessagingService
 
     @State private var mode: AuthMode = .createAccount
     @State private var signInEmail = ""
@@ -34,8 +73,11 @@ struct AuthenticationView: View {
     @State private var createPassword = ""
     @State private var createSuburb = "Brisbane"
     @State private var createRole: UserRole = .seller
+    @State private var legalInviteCode = ""
 
     @State private var errorMessage: String?
+    @State private var isSubmitting = false
+    @State private var isOpeningInvite = false
 
     var body: some View {
         NavigationStack {
@@ -43,6 +85,8 @@ struct AuthenticationView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     heroCard
                     modePicker
+                    demoAccessCard
+                    legalWorkspaceInviteCard
 
                     if let errorMessage {
                         errorCard(message: errorMessage)
@@ -61,6 +105,22 @@ struct AuthenticationView: View {
             }
             .background(authBackground.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                if let inviteCode = store.inboundLegalInviteCode, !inviteCode.isEmpty {
+                    legalInviteCode = inviteCode
+                }
+                if let message = store.inboundLegalInviteErrorMessage, !message.isEmpty {
+                    errorMessage = message
+                }
+            }
+            .onChange(of: store.inboundLegalInviteCode) { _, inviteCode in
+                guard let inviteCode, !inviteCode.isEmpty else { return }
+                legalInviteCode = inviteCode
+            }
+            .onChange(of: store.inboundLegalInviteErrorMessage) { _, message in
+                guard let message, !message.isEmpty else { return }
+                errorMessage = message
+            }
         }
     }
 
@@ -92,13 +152,14 @@ struct AuthenticationView: View {
                 }
             }
 
-            Text("Create a simple local account and we’ll remember this device. It’s enough for launch now, and we can swap in a full backend later.")
+            Text("Create a simple account, or open a legal workspace invite if you’re the conveyancer or solicitor handling the sale.")
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 10) {
                 authTag("Buy directly")
                 authTag("Sell privately")
-                authTag("Stored locally")
+                authTag("Legal workspace")
+                authTag("Backend ready")
             }
         }
         .padding(22)
@@ -160,17 +221,19 @@ struct AuthenticationView: View {
                     )
             }
 
-            Button("Sign In") {
-                do {
-                    try store.signIn(email: signInEmail, password: signInPassword)
-                } catch {
-                    errorMessage = error.localizedDescription
+            Button(isSubmitting ? "Signing In..." : "Sign In") {
+                Task {
+                    await signIn()
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(signInEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || signInPassword.isEmpty)
+            .disabled(
+                isSubmitting ||
+                signInEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                signInPassword.isEmpty
+            )
 
-            Text("Only accounts created on this device will sign in for now.")
+            Text("Backend accounts work when the local server is running. Otherwise, device-only accounts still work.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -227,21 +290,14 @@ struct AuthenticationView: View {
                 .pickerStyle(.segmented)
             }
 
-            Button("Create Account") {
-                do {
-                    try store.createAccount(
-                        name: createName,
-                        email: createEmail,
-                        password: createPassword,
-                        role: createRole,
-                        suburb: createSuburb
-                    )
-                } catch {
-                    errorMessage = error.localizedDescription
+            Button(isSubmitting ? "Creating..." : "Create Account") {
+                Task {
+                    await createAccount()
                 }
             }
             .buttonStyle(.borderedProminent)
             .disabled(
+                isSubmitting ||
                 createName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                 createEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                 createPassword.isEmpty ||
@@ -257,7 +313,104 @@ struct AuthenticationView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Launch-ready storage")
                 .font(.headline)
-            Text("For this first version, account details and your signed-in session are saved only on this device. That keeps the launch flow working now without making us wait on backend infrastructure.")
+            Text("When `backend/server.mjs` is running, sign-in and create-account use the local API. If it is offline, the app falls back to on-device storage so launch is never blocked.")
+                .foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(authPanel)
+    }
+
+    private var demoAccessCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Quick demo access")
+                .font(.headline)
+
+            Text("Use the seeded buyer or seller account when the local backend is running. Both use the password `HouseDeal123!`.")
+                .foregroundStyle(.secondary)
+
+            ForEach(DemoAccessAccount.allCases) { account in
+                Button {
+                    applyDemoAccount(account)
+                } label: {
+                    HStack(alignment: .center, spacing: 12) {
+                        Image(systemName: account == .buyer ? "person.crop.circle.badge.checkmark" : "house.circle")
+                            .font(.title3)
+                            .foregroundStyle(Color(red: 0.08, green: 0.49, blue: 0.55))
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(account.title)
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(.primary)
+                            Text(account.subtitle)
+                                .font(.subheadline)
+                                .foregroundStyle(.primary)
+                            Text(account.email)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Text("Use")
+                            .font(.footnote.weight(.bold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(
+                                Capsule()
+                                    .fill(Color(red: 0.90, green: 0.97, blue: 0.97))
+                            )
+                            .foregroundStyle(Color(red: 0.05, green: 0.34, blue: 0.39))
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(Color.white)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(authPanel)
+    }
+
+    private var legalWorkspaceInviteCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Legal workspace invite")
+                .font(.headline)
+
+            Text("Conveyancers and solicitors can open the limited legal workspace with the invite code shared from the sale. Invite codes activate on first use and expire after 30 days.")
+                .foregroundStyle(.secondary)
+
+            Text("Deep links in the shared invite can open this workspace directly. If the app falls back here, the invite code will already be filled in for you.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            authField(
+                title: "Invite code",
+                text: $legalInviteCode,
+                prompt: "ROW-BUY-1A2B3C4D5E",
+                keyboard: .asciiCapable,
+                autocapitalization: .characters,
+                disableAutocorrection: true
+            )
+
+            Button(isOpeningInvite ? "Opening..." : "Open Legal Workspace") {
+                Task {
+                    await openLegalWorkspace()
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(
+                isOpeningInvite ||
+                legalInviteCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            )
+
+            Text("This opens a restricted legal-only workspace with the shared contract and sale documents.")
+                .font(.footnote)
                 .foregroundStyle(.secondary)
         }
         .padding(20)
@@ -324,5 +477,65 @@ struct AuthenticationView: View {
                 Capsule()
                     .fill(Color.white.opacity(0.16))
             )
+    }
+
+    @MainActor
+    private func signIn() async {
+        errorMessage = nil
+        isSubmitting = true
+        defer { isSubmitting = false }
+
+        do {
+            try await store.signIn(email: signInEmail, password: signInPassword)
+            await messaging.activateSession(for: store.currentUserID)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func createAccount() async {
+        errorMessage = nil
+        isSubmitting = true
+        defer { isSubmitting = false }
+
+        do {
+            _ = try await store.createAccount(
+                name: createName,
+                email: createEmail,
+                password: createPassword,
+                role: createRole,
+                suburb: createSuburb
+            )
+            await messaging.activateSession(for: store.currentUserID)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func openLegalWorkspace() async {
+        errorMessage = nil
+        store.clearInboundLegalInviteError()
+        isOpeningInvite = true
+        defer { isOpeningInvite = false }
+
+        do {
+            let didOpen = try await store.openLegalWorkspace(inviteCode: legalInviteCode)
+            if !didOpen {
+                errorMessage = "That legal workspace invite could not be found yet."
+            }
+        } catch let error as MarketplaceHTTPError where error.canFallbackToLocal {
+            errorMessage = "The invite could not be loaded right now. Check the backend or try again on the device that already has the sale cached."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func applyDemoAccount(_ account: DemoAccessAccount) {
+        mode = .signIn
+        errorMessage = nil
+        signInEmail = account.email
+        signInPassword = account.password
     }
 }

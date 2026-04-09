@@ -13,15 +13,18 @@ final class EncryptedMessagingService: ObservableObject {
     private let fileURL: URL
     private let isEphemeral: Bool
     private let keychain = MessagingKeychain()
+    private let remoteSync: any MarketplaceConversationSyncing
 
     init(
         fileManager: FileManager = .default,
-        launchConfiguration: AppLaunchConfiguration? = nil
+        launchConfiguration: AppLaunchConfiguration? = nil,
+        remoteSync: (any MarketplaceConversationSyncing)? = nil
     ) {
         let launchConfiguration = launchConfiguration ?? .shared
 
         self.fileManager = fileManager
         self.isEphemeral = launchConfiguration.isScreenshotMode
+        self.remoteSync = remoteSync ?? DisabledConversationSync()
 
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -41,6 +44,17 @@ final class EncryptedMessagingService: ObservableObject {
             conversations = EncryptedConversation.seedThreads
         } else {
             load()
+        }
+    }
+
+    func activateSession(for userID: UUID) async {
+        guard !isEphemeral else { return }
+
+        do {
+            let threads = try await remoteSync.fetchThreads(for: userID)
+            mergeRemoteThreads(threads)
+        } catch {
+            return
         }
     }
 
@@ -78,13 +92,15 @@ final class EncryptedMessagingService: ObservableObject {
                     senderID: seller.id,
                     sentAt: .now,
                     body: "Secure private channel opened for \(listing.title). Ask about inspections, contracts, or terms here.",
-                    isSystem: true
+                    isSystem: true,
+                    saleTaskTarget: nil
                 )
             ]
         )
 
         conversations.insert(thread, at: 0)
         persist()
+        syncConversationInBackground(thread)
         return thread
     }
 
@@ -94,7 +110,8 @@ final class EncryptedMessagingService: ObservableObject {
         from sender: UserProfile,
         to recipient: UserProfile,
         body: String,
-        isSystem: Bool = false
+        isSystem: Bool = false,
+        saleTaskTarget: SaleReminderNavigationTarget? = nil
     ) -> EncryptedConversation? {
         let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedBody.isEmpty || isSystem else { return nil }
@@ -108,13 +125,18 @@ final class EncryptedMessagingService: ObservableObject {
                 senderID: sender.id,
                 sentAt: .now,
                 body: trimmedBody,
-                isSystem: isSystem
+                isSystem: isSystem,
+                saleTaskTarget: saleTaskTarget
             )
         )
         conversations[index].updatedAt = .now
         sortThreads()
         persist()
-        return conversations.first(where: { $0.id == thread.id })
+        let updatedThread = conversations.first(where: { $0.id == thread.id })
+        if let updatedThread {
+            syncConversationInBackground(updatedThread)
+        }
+        return updatedThread
     }
 
     func sendOfferSummary(
@@ -138,8 +160,68 @@ final class EncryptedMessagingService: ObservableObject {
         )
     }
 
+    func sendContractPacket(
+        listing: PropertyListing,
+        offerID: UUID,
+        buyer: UserProfile,
+        seller: UserProfile,
+        packet: ContractPacket,
+        triggeredBy sender: UserProfile
+    ) {
+        let recipient = sender.id == buyer.id ? seller : buyer
+        let summary = """
+        Contract packet sent to both parties.
+        Buyer legal representative: \(packet.buyerRepresentative.name) (\(legalContactLine(for: packet.buyerRepresentative)))
+        Seller legal representative: \(packet.sellerRepresentative.name) (\(legalContactLine(for: packet.sellerRepresentative)))
+        \(packet.summary)
+        """
+
+        _ = sendMessage(
+            listing: listing,
+            from: sender,
+            to: recipient,
+            body: summary,
+            isSystem: true,
+            saleTaskTarget: .saleTask(
+                listingID: listing.id,
+                offerID: offerID,
+                checklistItemID: "contract-packet"
+            )
+        )
+    }
+
     private func sortThreads() {
         conversations.sort { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func mergeRemoteThreads(_ remoteThreads: [EncryptedConversation]) {
+        guard !remoteThreads.isEmpty else { return }
+
+        for remoteThread in remoteThreads {
+            if let index = conversations.firstIndex(where: { $0.id == remoteThread.id }) {
+                conversations[index] = remoteThread
+            } else {
+                conversations.append(remoteThread)
+            }
+        }
+
+        sortThreads()
+        persist()
+    }
+
+    private func syncConversationInBackground(_ thread: EncryptedConversation) {
+        guard !isEphemeral else { return }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            do {
+                let syncedThread = try await remoteSync.upsertConversation(thread)
+                self.mergeRemoteThreads([syncedThread])
+            } catch {
+                return
+            }
+        }
     }
 
     private func load() {
@@ -188,6 +270,19 @@ final class EncryptedMessagingService: ObservableObject {
             assertionFailure("Failed to persist encrypted conversations: \(error.localizedDescription)")
         }
     }
+
+    private func legalContactLine(for professional: LegalProfessional) -> String {
+        if let phoneNumber = professional.phoneNumber,
+           !phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return phoneNumber
+        }
+
+        if let websiteURL = professional.websiteURL {
+            return websiteURL.absoluteString
+        }
+
+        return professional.primarySpecialty
+    }
 }
 
 struct EncryptedConversation: Identifiable, Codable, Hashable {
@@ -218,21 +313,24 @@ struct EncryptedConversation: Identifiable, Codable, Hashable {
                     senderID: MarketplaceSeed.sellerAvaID,
                     sentAt: .now.addingTimeInterval(-7_200),
                     body: "Secure private channel opened for Renovated Queenslander with pool and studio.",
-                    isSystem: true
+                    isSystem: true,
+                    saleTaskTarget: nil
                 ),
                 EncryptedMessage(
                     id: UUID(),
                     senderID: MarketplaceSeed.buyerOliviaID,
                     sentAt: .now.addingTimeInterval(-3_600),
                     body: "Hi Ava, can you confirm whether the studio has its own bathroom?",
-                    isSystem: false
+                    isSystem: false,
+                    saleTaskTarget: nil
                 ),
                 EncryptedMessage(
                     id: UUID(),
                     senderID: MarketplaceSeed.sellerAvaID,
                     sentAt: .now.addingTimeInterval(-1_200),
                     body: "Yes, it has a shower and powder room, and I can show you during Saturday's inspection.",
-                    isSystem: false
+                    isSystem: false,
+                    saleTaskTarget: nil
                 )
             ]
         )
@@ -245,6 +343,7 @@ struct EncryptedMessage: Identifiable, Codable, Hashable {
     var sentAt: Date
     var body: String
     var isSystem: Bool
+    var saleTaskTarget: SaleReminderNavigationTarget?
 }
 
 private struct ConversationSnapshot: Codable {

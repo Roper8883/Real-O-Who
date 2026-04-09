@@ -12,7 +12,8 @@ This project is now set up as a private property marketplace prototype for direc
 
 ## Important product note
 
-- This build is still a prototype. Listings, offers, and conversations are stored locally on-device in the current implementation.
+- This build is still a prototype. During development, the repo includes a lightweight local backend that can sync listings, account data, sale coordination, and conversations across devices.
+- The shipped app still works without that backend because account, listing, and conversation state fall back to device storage when no service is available.
 - A production launch would still need a hosted listing backend, account/identity verification, moderation, and a real encrypted transport service for multi-device messaging.
 
 ## Public URLs
@@ -24,7 +25,7 @@ This project is now set up as a private property marketplace prototype for direc
 
 ## Suggested App Review Notes
 
-`Real O Who` is a private-sale property marketplace prototype. App Review can access the complete experience immediately on launch with no login. Listings, offers, and buyer-seller conversations are stored locally on-device in this build so the review flow is fully testable without an external account.
+`Real O Who` is a private-sale property marketplace prototype. App Review can create a simple launch account or sign in to an account created on that same device. The build remains fully testable on one device because it falls back to local storage when no backend is available.
 
 ## Still required in App Store Connect
 

@@ -1,0 +1,502 @@
+{
+  "users": [
+    {
+      "id": "C8F18F9D-772E-4D62-8A88-0B9E23265004",
+      "name": "Mason Wright",
+      "role": "seller",
+      "suburb": "Wilston, QLD",
+      "headline": "Selling privately and managing inspections directly.",
+      "verificationNote": "Owner dashboard enabled",
+      "buyerStage": null,
+      "createdAt": "2026-04-08T10:00:00Z"
+    },
+    {
+      "id": "C8F18F9D-772E-4D62-8A88-0B9E23265002",
+      "name": "Noah Chen",
+      "role": "buyer",
+      "suburb": "New Farm, QLD",
+      "headline": "Focused on inner-city homes and direct owner conversations.",
+      "verificationNote": "Finance pre-approval uploaded",
+      "buyerStage": "preApproved",
+      "createdAt": "2026-04-08T10:00:00Z"
+    },
+    {
+      "id": "82591b54-694a-484b-9cf0-7b53d55f2623",
+      "name": "Taylor Buyer",
+      "role": "buyer",
+      "suburb": "Brisbane",
+      "headline": "Looking to buy directly from owners without agent friction.",
+      "verificationNote": "Buyer account created on the Real O Who backend",
+      "buyerStage": "browsing",
+      "createdAt": "2026-04-08T08:45:21.165Z"
+    }
+  ],
+  "authAccounts": [
+    {
+      "id": "6ed3f950-7f90-4d8a-b18c-15d875712a64",
+      "userId": "C8F18F9D-772E-4D62-8A88-0B9E23265004",
+      "email": "mason@realowho.app",
+      "passwordSaltBase64": "c2VlZC1kZW1vLXNlbGxlcg==",
+      "passwordHashBase64": "bh7jA+zIl8bryT8CDZxjYkQGQEaOaBjcWLPUGJfzwvI=",
+      "createdAt": "2026-04-08T10:00:00Z",
+      "lastSignedInAt": "2026-04-08T10:00:00Z"
+    },
+    {
+      "id": "2af583d9-ae86-42b1-a4e6-bdb3b4fd75ec",
+      "userId": "C8F18F9D-772E-4D62-8A88-0B9E23265002",
+      "email": "noah@realowho.app",
+      "passwordSaltBase64": "c2VlZC1kZW1vLWJ1eWVyMQ==",
+      "passwordHashBase64": "57WNqFOUDPYEO789FLPrAvFmwvSKjUzmzwNksq8qkpI=",
+      "createdAt": "2026-04-08T10:00:00Z",
+      "lastSignedInAt": "2026-04-08T09:23:27.089Z"
+    },
+    {
+      "id": "971d4440-4c23-4297-8e52-6b4c67ba9eff",
+      "userId": "82591b54-694a-484b-9cf0-7b53d55f2623",
+      "email": "taylor@example.com",
+      "passwordSaltBase64": "2RIYNdnz/6333mvtyvuACQ==",
+      "passwordHashBase64": "sHr3n2oaLIFfjRHTZ8HuyU1q2eHqbGVPlGaQfmn8sG8=",
+      "createdAt": "2026-04-08T08:45:21.165Z",
+      "lastSignedInAt": "2026-04-08T08:45:21.176Z"
+    }
+  ],
+  "conversations": [
+    {
+      "id": "A0A2A8C9-83AF-479A-9AD6-4E0B28D64210",
+      "listingId": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1971004",
+      "participantIds": [
+        "C8F18F9D-772E-4D62-8A88-0B9E23265002",
+        "C8F18F9D-772E-4D62-8A88-0B9E23265004"
+      ],
+      "encryptionLabel": "Synced dev transport",
+      "updatedAt": "2026-04-08T10:15:00Z",
+      "messages": [
+        {
+          "id": "d75b7afd-69f2-47fa-a9ac-9faff81b2a1f",
+          "senderId": "C8F18F9D-772E-4D62-8A88-0B9E23265004",
+          "sentAt": "2026-04-08T10:15:00Z",
+          "body": "Private chat is ready for the New Farm apartment. Ask about inspections, contract timing, or settlement here.",
+          "isSystem": true
+        }
+      ]
+    },
+    {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "listingId": "22222222-2222-2222-2222-222222222222",
+      "participantIds": [
+        "82591b54-694a-484b-9cf0-7b53d55f2623",
+        "33333333-3333-3333-3333-333333333333"
+      ],
+      "encryptionLabel": "Synced dev transport",
+      "updatedAt": "2026-04-08T08:45:21.176Z",
+      "messages": [
+        {
+          "id": "44444444-4444-4444-4444-444444444444",
+          "senderId": "82591b54-694a-484b-9cf0-7b53d55f2623",
+          "sentAt": "2026-04-08T08:45:21.176Z",
+          "body": "Hello from the backend sync test.",
+          "isSystem": false
+        }
+      ]
+    }
+  ],
+  "listings": [
+    {
+      "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1971004",
+      "title": "Corner-block apartment with city skyline views",
+      "headline": "Investor-friendly layout with strong recent sales evidence.",
+      "summary": "An upper-level apartment with panoramic views, oversized balcony, and a private-seller workflow built for fast shortlist-to-offer conversion.",
+      "propertyType": "apartment",
+      "status": "underOffer",
+      "address": {
+        "street": "17/85 Moray Street",
+        "suburb": "New Farm",
+        "state": "QLD",
+        "postcode": "4005"
+      },
+      "askingPrice": 865000,
+      "bedrooms": 2,
+      "bathrooms": 2,
+      "parkingSpaces": 1,
+      "landSizeText": "108 sqm",
+      "features": [
+        "City views",
+        "Secure parking",
+        "Lift access",
+        "Balcony",
+        "Walk to riverwalk"
+      ],
+      "sellerID": "C8F18F9D-772E-4D62-8A88-0B9E23265004",
+      "inspectionSlots": [
+        {
+          "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1972005",
+          "startsAt": "2026-04-10T03:00:00Z",
+          "endsAt": "2026-04-10T03:25:00Z",
+          "note": "Mid-week private appointment"
+        }
+      ],
+      "marketPulse": {
+        "valueEstimateLow": 840000,
+        "valueEstimateHigh": 878000,
+        "suburbMedian": 912000,
+        "buyerDemandScore": 77,
+        "averageDaysOnMarket": 21,
+        "schoolInsight": {
+          "catchmentName": "New Farm State School",
+          "walkMinutes": 10,
+          "score": 85
+        }
+      },
+      "comparableSales": [
+        {
+          "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1973006",
+          "address": "12/71 Moray Street, New Farm",
+          "soldPrice": 855000,
+          "soldAt": "2026-03-23T00:00:00Z",
+          "bedrooms": 2
+        }
+      ],
+      "palette": "dusk",
+      "latitude": -27.4685,
+      "longitude": 153.0459,
+      "isFeatured": true,
+      "publishedAt": "2026-04-04T10:05:00Z",
+      "updatedAt": "2026-04-08T09:39:53.438Z"
+    },
+    {
+      "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1971001",
+      "title": "Renovated Queenslander with pool and studio",
+      "headline": "Privately listed family home with strong school catchment appeal.",
+      "summary": "A bright, elevated home with open-plan living, a detached studio, landscaped yard, and flexible private inspection windows for serious buyers.",
+      "propertyType": "house",
+      "status": "active",
+      "address": {
+        "street": "14 Roseberry Street",
+        "suburb": "Graceville",
+        "state": "QLD",
+        "postcode": "4075"
+      },
+      "askingPrice": 1585000,
+      "bedrooms": 4,
+      "bathrooms": 2,
+      "parkingSpaces": 2,
+      "landSizeText": "607 sqm",
+      "features": [
+        "Private pool",
+        "Detached studio",
+        "School catchment appeal",
+        "Walk to rail",
+        "Solar power"
+      ],
+      "sellerID": "C8F18F9D-772E-4D62-8A88-0B9E23265003",
+      "inspectionSlots": [
+        {
+          "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1972001",
+          "startsAt": "2026-04-10T23:30:00Z",
+          "endsAt": "2026-04-11T00:15:00Z",
+          "note": "Saturday private inspection"
+        },
+        {
+          "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1972002",
+          "startsAt": "2026-04-11T07:30:00Z",
+          "endsAt": "2026-04-11T08:00:00Z",
+          "note": "After-work twilight viewing"
+        }
+      ],
+      "marketPulse": {
+        "valueEstimateLow": 1530000,
+        "valueEstimateHigh": 1610000,
+        "suburbMedian": 1490000,
+        "buyerDemandScore": 89,
+        "averageDaysOnMarket": 24,
+        "schoolInsight": {
+          "catchmentName": "Graceville State School",
+          "walkMinutes": 11,
+          "score": 91
+        }
+      },
+      "comparableSales": [
+        {
+          "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1973001",
+          "address": "22 Verney Road, Graceville",
+          "soldPrice": 1510000,
+          "soldAt": "2026-03-20T00:00:00Z",
+          "bedrooms": 4
+        },
+        {
+          "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1973002",
+          "address": "7 Long Street East, Graceville",
+          "soldPrice": 1625000,
+          "soldAt": "2026-03-05T00:00:00Z",
+          "bedrooms": 4
+        }
+      ],
+      "palette": "ocean",
+      "latitude": -27.5232,
+      "longitude": 152.9817,
+      "isFeatured": true,
+      "publishedAt": "2026-04-06T08:30:00Z",
+      "updatedAt": "2026-04-08T07:10:00Z"
+    },
+    {
+      "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1971002",
+      "title": "Architect townhouse near Newmarket village",
+      "headline": "Turn-key private sale with curated finishes and quick offer path.",
+      "summary": "A low-maintenance inner-north townhouse with high ceilings, protected outdoor entertaining, and owner-managed inspections designed for efficient private sale.",
+      "propertyType": "townhouse",
+      "status": "active",
+      "address": {
+        "street": "5/32 Ashgrove Avenue",
+        "suburb": "Wilston",
+        "state": "QLD",
+        "postcode": "4051"
+      },
+      "askingPrice": 1125000,
+      "bedrooms": 3,
+      "bathrooms": 2,
+      "parkingSpaces": 2,
+      "landSizeText": "192 sqm",
+      "features": [
+        "Stone kitchen",
+        "Courtyard",
+        "Private garage",
+        "Walk to cafes",
+        "Low body corporate"
+      ],
+      "sellerID": "C8F18F9D-772E-4D62-8A88-0B9E23265004",
+      "inspectionSlots": [
+        {
+          "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1972003",
+          "startsAt": "2026-04-10T01:00:00Z",
+          "endsAt": "2026-04-10T01:30:00Z",
+          "note": "Open private inspection"
+        }
+      ],
+      "marketPulse": {
+        "valueEstimateLow": 1090000,
+        "valueEstimateHigh": 1155000,
+        "suburbMedian": 1070000,
+        "buyerDemandScore": 84,
+        "averageDaysOnMarket": 19,
+        "schoolInsight": {
+          "catchmentName": "Wilston State School",
+          "walkMinutes": 8,
+          "score": 88
+        }
+      },
+      "comparableSales": [
+        {
+          "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1973003",
+          "address": "3/14 Erin Street, Wilston",
+          "soldPrice": 1080000,
+          "soldAt": "2026-03-12T00:00:00Z",
+          "bedrooms": 3
+        },
+        {
+          "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1973004",
+          "address": "8/41 Swan Terrace, Wilston",
+          "soldPrice": 1160000,
+          "soldAt": "2026-02-24T00:00:00Z",
+          "bedrooms": 3
+        }
+      ],
+      "palette": "sand",
+      "latitude": -27.4329,
+      "longitude": 153.0151,
+      "isFeatured": true,
+      "publishedAt": "2026-04-03T09:15:00Z",
+      "updatedAt": "2026-04-08T06:45:00Z"
+    },
+    {
+      "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1971003",
+      "title": "Leafy acreage retreat with secondary dwelling",
+      "headline": "Private acreage listing with strong multi-generational flexibility.",
+      "summary": "Set on usable land with a secondary dwelling and wide frontage, this private acreage sale is positioned for buyers seeking lifestyle space without losing access to the city.",
+      "propertyType": "acreage",
+      "status": "active",
+      "address": {
+        "street": "88 Cedar Creek Road",
+        "suburb": "Samford Valley",
+        "state": "QLD",
+        "postcode": "4520"
+      },
+      "askingPrice": 1895000,
+      "bedrooms": 5,
+      "bathrooms": 3,
+      "parkingSpaces": 4,
+      "landSizeText": "1.4 ha",
+      "features": [
+        "Secondary dwelling",
+        "Rainwater tanks",
+        "Horse-ready paddock",
+        "Mountain outlook",
+        "Large shed"
+      ],
+      "sellerID": "C8F18F9D-772E-4D62-8A88-0B9E23265003",
+      "inspectionSlots": [
+        {
+          "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1972004",
+          "startsAt": "2026-04-09T00:00:00Z",
+          "endsAt": "2026-04-09T01:00:00Z",
+          "note": "Booked acreage tour"
+        }
+      ],
+      "marketPulse": {
+        "valueEstimateLow": 1810000,
+        "valueEstimateHigh": 1920000,
+        "suburbMedian": 1760000,
+        "buyerDemandScore": 74,
+        "averageDaysOnMarket": 33,
+        "schoolInsight": {
+          "catchmentName": "Samford State School",
+          "walkMinutes": 14,
+          "score": 80
+        }
+      },
+      "comparableSales": [
+        {
+          "id": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1973005",
+          "address": "21 Wights Mountain Road, Samford Valley",
+          "soldPrice": 1840000,
+          "soldAt": "2026-03-08T00:00:00Z",
+          "bedrooms": 5
+        }
+      ],
+      "palette": "gumleaf",
+      "latitude": -27.3696,
+      "longitude": 152.8905,
+      "isFeatured": false,
+      "publishedAt": "2026-03-31T07:50:00Z",
+      "updatedAt": "2026-04-07T14:10:00Z"
+    }
+  ],
+  "marketplaceStateByUser": {
+    "C8F18F9D-772E-4D62-8A88-0B9E23265002": {
+      "userID": "C8F18F9D-772E-4D62-8A88-0B9E23265002",
+      "favoriteListingIDs": [
+        "DAA3A4D1-0FE6-4FD7-8A81-68D7E1971004",
+        "DAA3A4D1-0FE6-4FD7-8A81-68D7E1971002"
+      ],
+      "savedSearches": [
+        {
+          "id": "7A19AB1A-B78A-440D-8308-1F95FC891011",
+          "title": "Inner north buyer shortlist",
+          "suburb": "Wilston",
+          "minimumPrice": 900000,
+          "maximumPrice": 1400000,
+          "minimumBedrooms": 3,
+          "propertyTypes": [
+            "house",
+            "townhouse"
+          ],
+          "alertsEnabled": true
+        },
+        {
+          "id": "7A19AB1A-B78A-440D-8308-1F95FC891012",
+          "title": "Riverfront apartment watch",
+          "suburb": "New Farm",
+          "minimumPrice": 700000,
+          "maximumPrice": 980000,
+          "minimumBedrooms": 2,
+          "propertyTypes": [
+            "apartment"
+          ],
+          "alertsEnabled": true
+        }
+      ]
+    },
+    "C8F18F9D-772E-4D62-8A88-0B9E23265004": {
+      "userID": "C8F18F9D-772E-4D62-8A88-0B9E23265004",
+      "favoriteListingIDs": [],
+      "savedSearches": []
+    }
+  },
+  "taskSnapshotStateByViewer": {
+    "user:sync-smoke-test": {
+      "viewerID": "user:sync-smoke-test",
+      "seenUrgentSnapshotKeysByMessageID": {
+        "msg-1": "critical|1 day overdue"
+      },
+      "seenUrgentSnapshotKeysByTaskID": {},
+      "seenUrgentSnapshotSeenAtByMessageID": {},
+      "seenUrgentSnapshotSeenAtByTaskID": {}
+    },
+    "user:audience-smoke-test": {
+      "viewerID": "user:audience-smoke-test",
+      "seenUrgentSnapshotKeysByMessageID": {
+        "msg-1": "warning|1 invite needs follow-up"
+      },
+      "seenUrgentSnapshotKeysByTaskID": {
+        "offer-1|workspace-invites": "warning|1 invite needs follow-up"
+      },
+      "seenUrgentSnapshotSeenAtByMessageID": {},
+      "seenUrgentSnapshotSeenAtByTaskID": {}
+    },
+    "audit-viewer-last-seen": {
+      "viewerID": "audit-viewer-last-seen",
+      "seenUrgentSnapshotKeysByMessageID": {
+        "message-1": "critical|follow-up"
+      },
+      "seenUrgentSnapshotKeysByTaskID": {
+        "task-1": "critical|follow-up"
+      },
+      "seenUrgentSnapshotSeenAtByMessageID": {
+        "message-1": 1744146000000
+      },
+      "seenUrgentSnapshotSeenAtByTaskID": {
+        "task-1": 1744149600000
+      }
+    }
+  },
+  "salesByListing": {
+    "DAA3A4D1-0FE6-4FD7-8A81-68D7E1971004": {
+      "id": "8F69115B-988B-4F30-A5F1-8E0CF6A41001",
+      "listingID": "DAA3A4D1-0FE6-4FD7-8A81-68D7E1971004",
+      "buyerID": "C8F18F9D-772E-4D62-8A88-0B9E23265002",
+      "sellerID": "C8F18F9D-772E-4D62-8A88-0B9E23265004",
+      "amount": 855000,
+      "conditions": "Subject to finance approval and building and pest inspection.",
+      "createdAt": "2026-04-08T09:30:00Z",
+      "status": "underOffer",
+      "buyerLegalSelection": null,
+      "sellerLegalSelection": {
+        "userID": "C8F18F9D-772E-4D62-8A88-0B9E23265004",
+        "selectedAt": "2026-04-08T09:40:00Z",
+        "professional": {
+          "id": "local-rivercity-property-law",
+          "name": "Rivercity Property Law",
+          "specialties": [
+            "Property solicitor",
+            "Settlement support"
+          ],
+          "address": "42 Eagle Street, Brisbane City QLD 4000",
+          "suburb": "Brisbane City",
+          "phoneNumber": "(07) 3555 1180",
+          "websiteURL": "https://example.com/rivercity-property-law",
+          "mapsURL": "https://maps.google.com/?q=42+Eagle+Street+Brisbane+City+QLD+4000",
+          "latitude": -27.4708,
+          "longitude": 153.0304,
+          "rating": 4.7,
+          "reviewCount": 49,
+          "source": "localFallback",
+          "searchSummary": "Property-law team with contract preparation and buyer-seller signing support."
+        }
+      },
+      "contractPacket": null,
+      "updates": [
+        {
+          "id": "47c7f781-026f-4056-9b9b-4dab528fabad",
+          "createdAt": "2026-04-08T09:30:00Z",
+          "title": "Offer received",
+          "body": "A private buyer has submitted an offer and both sides can now choose their legal representative."
+        },
+        {
+          "id": "00898bc1-6c7c-4b37-a308-947efb9b6b1a",
+          "createdAt": "2026-04-08T09:40:00Z",
+          "title": "Seller representative selected",
+          "body": "Mason Wright chose Rivercity Property Law to handle the property solicitor side of the sale."
+        }
+      ]
+    }
+  }
+}

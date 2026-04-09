@@ -1,6 +1,6 @@
 import Foundation
 
-enum MarketplaceAuthError: LocalizedError {
+nonisolated enum MarketplaceAuthError: LocalizedError, Sendable {
     case invalidName
     case invalidEmail
     case invalidSuburb
@@ -32,7 +32,7 @@ enum MarketplaceAuthError: LocalizedError {
     }
 }
 
-struct LocalAuthAccount: Identifiable, Codable, Hashable {
+nonisolated struct LocalAuthAccount: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var userID: UUID
     var email: String
