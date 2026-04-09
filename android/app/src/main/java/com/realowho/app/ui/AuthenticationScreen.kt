@@ -45,7 +45,7 @@ import com.realowho.app.auth.UserRole
 import com.realowho.app.marketplace.SaleCoordinationStore
 import kotlinx.coroutines.launch
 
-private enum class AuthMode(val title: String) {
+enum class AuthMode(val title: String) {
     SIGN_IN("Sign In"),
     CREATE_ACCOUNT("Create Account")
 }
@@ -82,11 +82,13 @@ fun AuthenticationScreen(
     store: MarketplaceSessionStore,
     saleStore: SaleCoordinationStore,
     prefilledLegalInviteCode: String? = null,
-    externalErrorMessage: String? = null
+    externalErrorMessage: String? = null,
+    initialMode: AuthMode = AuthMode.CREATE_ACCOUNT,
+    onAuthSuccess: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    var modeName by rememberSaveable { mutableStateOf(AuthMode.CREATE_ACCOUNT.name) }
+    var modeName by rememberSaveable { mutableStateOf(initialMode.name) }
     val mode = AuthMode.valueOf(modeName)
 
     var signInEmail by rememberSaveable { mutableStateOf("") }
@@ -115,6 +117,10 @@ fun AuthenticationScreen(
         if (!externalErrorMessage.isNullOrBlank()) {
             errorMessage = externalErrorMessage
         }
+    }
+
+    LaunchedEffect(initialMode) {
+        modeName = initialMode.name
     }
 
     Box(
@@ -292,6 +298,7 @@ fun AuthenticationScreen(
                                     errorMessage = null
                                     try {
                                         store.signIn(signInEmail, signInPassword)
+                                        onAuthSuccess()
                                     } catch (error: MarketplaceAuthException) {
                                         errorMessage = error.message
                                     } finally {
@@ -360,6 +367,7 @@ fun AuthenticationScreen(
                                             role = createRole,
                                             suburb = createSuburb
                                         )
+                                        onAuthSuccess()
                                     } catch (error: MarketplaceAuthException) {
                                         errorMessage = error.message
                                     } finally {
@@ -473,7 +481,7 @@ private fun AuthPanel(title: String, content: @Composable ColumnScope.() -> Unit
 }
 
 @Composable
-private fun MessageCard(title: String, body: String, accent: Color) {
+fun MessageCard(title: String, body: String, accent: Color) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(
             modifier = Modifier.padding(18.dp),

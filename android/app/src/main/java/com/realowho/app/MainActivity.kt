@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +39,18 @@ class MainActivity : ComponentActivity() {
                     pendingLegalInviteCode = null
                 )
             }
+            val launchStateStore = remember { AppLaunchStateStore(applicationContext) }
+            var hasCompletedWelcome by remember {
+                mutableStateOf(
+                    launchStateStore.hasCompletedWelcome() || launchConfiguration.isScreenshotMode
+                )
+            }
+            LaunchedEffect(launchConfiguration.isScreenshotMode) {
+                if (launchConfiguration.isScreenshotMode) {
+                    launchStateStore.setWelcomeCompleted(true)
+                    hasCompletedWelcome = true
+                }
+            }
             val store = remember { MarketplaceSessionStore(applicationContext, baseLaunchConfiguration) }
             val saleStore = remember { SaleCoordinationStore(applicationContext, baseLaunchConfiguration) }
             val conversationStore = remember { ConversationStore(applicationContext, baseLaunchConfiguration) }
@@ -53,6 +66,11 @@ class MainActivity : ComponentActivity() {
                     saleStore = saleStore,
                     conversationStore = conversationStore,
                     taskSnapshotStore = taskSnapshotStore,
+                    hasCompletedWelcome = hasCompletedWelcome,
+                    onWelcomeCompleted = {
+                        hasCompletedWelcome = true
+                        launchStateStore.setWelcomeCompleted(true)
+                    },
                     pendingSaleWorkspaceLaunch = pendingSaleWorkspaceLaunch,
                     onPendingSaleWorkspaceLaunchHandled = {
                         pendingSaleWorkspaceLaunch = false

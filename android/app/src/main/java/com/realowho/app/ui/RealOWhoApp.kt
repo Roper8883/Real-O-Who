@@ -31,6 +31,8 @@ fun RealOWhoApp(
     saleStore: SaleCoordinationStore,
     conversationStore: ConversationStore,
     taskSnapshotStore: ConversationTaskSnapshotSyncStore,
+    hasCompletedWelcome: Boolean,
+    onWelcomeCompleted: () -> Unit,
     pendingSaleWorkspaceLaunch: Boolean,
     onPendingSaleWorkspaceLaunchHandled: () -> Unit,
     pendingFocusedChecklistItemId: String?,
@@ -43,6 +45,7 @@ fun RealOWhoApp(
     val reminderScheduler = remember {
         SaleReminderScheduler(context.applicationContext)
     }
+    var welcomeAuthMode by remember { mutableStateOf<AuthMode?>(null) }
     var deepLinkErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var deepLinkInviteCode by rememberSaveable { mutableStateOf<String?>(null) }
     var didRequestNotificationPermission by rememberSaveable { mutableStateOf(false) }
@@ -85,6 +88,18 @@ fun RealOWhoApp(
             deepLinkErrorMessage = error.message ?: "Could not open the legal workspace right now."
         } finally {
             onPendingLegalInviteCodeHandled()
+        }
+    }
+
+    LaunchedEffect(deepLinkInviteCode, hasCompletedWelcome) {
+        if (!hasCompletedWelcome && !deepLinkInviteCode.isNullOrEmpty()) {
+            welcomeAuthMode = AuthMode.SIGN_IN
+        }
+    }
+
+    LaunchedEffect(hasCompletedWelcome) {
+        if (hasCompletedWelcome) {
+            welcomeAuthMode = null
         }
     }
 
@@ -173,6 +188,27 @@ fun RealOWhoApp(
                 conversationStore = conversationStore,
                 taskSnapshotStore = taskSnapshotStore
             )
+        } else if (!hasCompletedWelcome) {
+            if (welcomeAuthMode == null) {
+                WelcomeScreen(
+                    store = store,
+                    onContinue = onWelcomeCompleted,
+                    onSignIn = { welcomeAuthMode = AuthMode.SIGN_IN },
+                    onCreateAccount = { welcomeAuthMode = AuthMode.CREATE_ACCOUNT }
+                )
+            } else {
+                AuthenticationScreen(
+                    store = store,
+                    saleStore = saleStore,
+                    prefilledLegalInviteCode = deepLinkInviteCode,
+                    externalErrorMessage = deepLinkErrorMessage,
+                    initialMode = welcomeAuthMode,
+                    onAuthSuccess = {
+                        welcomeAuthMode = null
+                        onWelcomeCompleted()
+                    }
+                )
+            }
         } else if (store.isAuthenticated) {
             MarketplaceHomeScreen(
                 store = store,
@@ -193,7 +229,8 @@ fun RealOWhoApp(
                 store = store,
                 saleStore = saleStore,
                 prefilledLegalInviteCode = deepLinkInviteCode,
-                externalErrorMessage = deepLinkErrorMessage
+                externalErrorMessage = deepLinkErrorMessage,
+                initialMode = if (!deepLinkInviteCode.isNullOrEmpty()) AuthMode.SIGN_IN else AuthMode.CREATE_ACCOUNT
             )
         }
     }
