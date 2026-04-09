@@ -45,7 +45,7 @@ const fallbackLegalProfessionals = [
     address: "Level 8, 123 Adelaide Street, Brisbane City QLD 4000",
     suburb: "Brisbane City",
     phoneNumber: "(07) 3123 4501",
-    websiteURL: "https://example.com/brisbane-conveyancing-group",
+    websiteURL: "https://www.google.com/search?q=Brisbane+Conveyancing+Group",
     mapsURL: "https://maps.google.com/?q=123+Adelaide+Street+Brisbane+City+QLD+4000",
     latitude: -27.4685,
     longitude: 153.0286,
@@ -61,7 +61,7 @@ const fallbackLegalProfessionals = [
     address: "42 Eagle Street, Brisbane City QLD 4000",
     suburb: "Brisbane City",
     phoneNumber: "(07) 3555 1180",
-    websiteURL: "https://example.com/rivercity-property-law",
+    websiteURL: "https://www.google.com/search?q=Rivercity+Property+Law",
     mapsURL: "https://maps.google.com/?q=42+Eagle+Street+Brisbane+City+QLD+4000",
     latitude: -27.4708,
     longitude: 153.0304,
@@ -77,7 +77,7 @@ const fallbackLegalProfessionals = [
     address: "19 Boundary Street, West End QLD 4101",
     suburb: "West End",
     phoneNumber: "(07) 3844 9082",
-    websiteURL: "https://example.com/west-end-settlement",
+    websiteURL: "https://www.google.com/search?q=West+End+Settlement+Co",
     mapsURL: "https://maps.google.com/?q=19+Boundary+Street+West+End+QLD+4101",
     latitude: -27.4812,
     longitude: 153.0099,
@@ -93,7 +93,7 @@ const fallbackLegalProfessionals = [
     address: "77 Oxford Street, Bulimba QLD 4171",
     suburb: "Bulimba",
     phoneNumber: "(07) 3399 4412",
-    websiteURL: "https://example.com/bulimba-legal",
+    websiteURL: "https://www.google.com/search?q=Bulimba+Legal+%26+Conveyancing",
     mapsURL: "https://maps.google.com/?q=77+Oxford+Street+Bulimba+QLD+4171",
     latitude: -27.4523,
     longitude: 153.0577,
@@ -109,7 +109,7 @@ const fallbackLegalProfessionals = [
     address: "3 Wembley Road, Logan Central QLD 4114",
     suburb: "Logan Central",
     phoneNumber: "(07) 3290 7750",
-    websiteURL: "https://example.com/logan-private-sale-law",
+    websiteURL: "https://www.google.com/search?q=Logan+Private+Sale+Law",
     mapsURL: "https://maps.google.com/?q=3+Wembley+Road+Logan+Central+QLD+4114",
     latitude: -27.6394,
     longitude: 153.1093,
@@ -125,7 +125,7 @@ const fallbackLegalProfessionals = [
     address: "9 Short Street, Southport QLD 4215",
     suburb: "Southport",
     phoneNumber: "(07) 5528 4100",
-    websiteURL: "https://example.com/gold-coast-conveyancing",
+    websiteURL: "https://www.google.com/search?q=Gold+Coast+Conveyancing+Studio",
     mapsURL: "https://maps.google.com/?q=9+Short+Street+Southport+QLD+4215",
     latitude: -27.9682,
     longitude: 153.4086,
@@ -179,6 +179,14 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/v1/auth/sign-in") {
       const body = await readJson(request);
       return handleSignIn(body, response);
+    }
+
+    if (
+      request.method === "DELETE" &&
+      url.pathname.startsWith("/v1/auth/account/")
+    ) {
+      const userId = url.pathname.split("/").pop();
+      return handleDeleteAccount(userId, response);
     }
 
     if (request.method === "GET" && url.pathname === "/v1/conversations") {
@@ -396,6 +404,56 @@ async function handleSignIn(body, response) {
   await saveState(state);
 
   return json(response, 200, { user, account: updatedAccount });
+}
+
+async function handleDeleteAccount(userId, response) {
+  if (!userId || typeof userId !== "string") {
+    return json(response, 400, { error: "User id is required." });
+  }
+
+  const userExists = state.users.some((user) => user.id === userId);
+  if (!userExists) {
+    return json(response, 404, { error: "That account could not be found on this backend." });
+  }
+
+  const listingIdsOwnedByUser = new Set(
+    state.listings
+      .filter((listing) => listing.sellerID === userId)
+      .map((listing) => listing.id)
+  );
+
+  const salesByListing = Object.fromEntries(
+    Object.entries(state.salesByListing).filter(([listingId, sale]) => {
+      if (listingIdsOwnedByUser.has(listingId)) {
+        return false;
+      }
+
+      return sale?.buyerID !== userId && sale?.sellerID !== userId;
+    })
+  );
+
+  const filteredListings = state.listings.filter((listing) => listing.sellerID !== userId);
+  const reconciledListings = syncListingsWithSales(sortListings(filteredListings), salesByListing).listings;
+
+  state = {
+    ...state,
+    users: state.users.filter((user) => user.id !== userId),
+    authAccounts: state.authAccounts.filter((account) => account.userId !== userId),
+    conversations: state.conversations.filter(
+      (conversation) => !conversation.participantIds.includes(userId)
+    ),
+    listings: reconciledListings,
+    marketplaceStateByUser: Object.fromEntries(
+      Object.entries(state.marketplaceStateByUser).filter(([key]) => key !== userId)
+    ),
+    taskSnapshotStateByViewer: Object.fromEntries(
+      Object.entries(state.taskSnapshotStateByViewer).filter(([key]) => key !== `user:${userId}`)
+    ),
+    salesByListing
+  };
+  await saveState(state);
+
+  return json(response, 200, { ok: true });
 }
 
 async function handleConversationUpsert(conversationId, body, response) {

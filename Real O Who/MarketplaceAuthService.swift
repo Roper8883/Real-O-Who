@@ -26,6 +26,11 @@ protocol MarketplaceAuthServing: Sendable {
         registration: MarketplaceAuthRegistration,
         existingAccounts: [LocalAuthAccount]
     ) async throws -> MarketplaceAuthSession
+
+    nonisolated func deleteAccount(
+        account: LocalAuthAccount?,
+        user: UserProfile
+    ) async throws
 }
 
 nonisolated struct LocalMarketplaceAuthService: MarketplaceAuthServing, Sendable {
@@ -122,6 +127,11 @@ nonisolated struct LocalMarketplaceAuthService: MarketplaceAuthServing, Sendable
 
         return MarketplaceAuthSession(user: user, account: account)
     }
+
+    nonisolated func deleteAccount(
+        account _: LocalAuthAccount?,
+        user _: UserProfile
+    ) async throws {}
 
     private static func normalizedEmail(_ email: String) -> String {
         email

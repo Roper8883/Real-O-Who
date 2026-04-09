@@ -13,6 +13,7 @@ struct Real_O_WhoApp: App {
     @StateObject private var messaging: EncryptedMessagingService
     @StateObject private var taskSnapshots: SaleTaskSnapshotSyncStore
     @StateObject private var reminders = SaleReminderService()
+    @AppStorage("realowho.hasCompletedWelcome") private var hasCompletedWelcome = false
 
     init() {
         let launchConfiguration = AppLaunchConfiguration.shared
@@ -58,21 +59,35 @@ struct Real_O_WhoApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if store.legalWorkspaceSession != nil {
+                if shouldShowWelcome {
+                    LaunchWelcomeView(onComplete: {
+                        hasCompletedWelcome = true
+                    })
+                        .environmentObject(store)
+                        .environmentObject(messaging)
+                        .environmentObject(taskSnapshots)
+                        .environmentObject(reminders)
+                } else if store.legalWorkspaceSession != nil {
                     LegalWorkspaceView()
-                } else if store.isAuthenticated {
-                    ContentView()
                 } else {
-                    AuthenticationView()
+                    ContentView()
                 }
             }
                 .environmentObject(store)
                 .environmentObject(messaging)
                 .environmentObject(taskSnapshots)
                 .environmentObject(reminders)
+                .onAppear {
+                    if AppLaunchConfiguration.shared.isScreenshotMode {
+                        hasCompletedWelcome = true
+                    }
+                }
                 .onOpenURL { url in
                     Task {
                         await store.handleLegalWorkspaceDeepLink(url)
+                        if store.legalWorkspaceSession != nil {
+                            hasCompletedWelcome = true
+                        }
                     }
                 }
                 .task(id: taskSnapshotRefreshKey) {
@@ -81,7 +96,7 @@ struct Real_O_WhoApp: App {
                 .task(id: reminderSyncKey) {
                     await reminders.syncReminders(
                         isAuthenticated: store.isAuthenticated,
-                        currentUser: store.isAuthenticated ? store.currentUser : nil,
+                        currentUser: store.currentUser,
                         offers: store.offers,
                         listings: store.listings,
                         taskSnapshots: taskSnapshots
@@ -106,14 +121,18 @@ struct Real_O_WhoApp: App {
         }
     }
 
+    private var shouldShowWelcome: Bool {
+        if AppLaunchConfiguration.shared.isScreenshotMode {
+            return false
+        }
+
+        return !hasCompletedWelcome
+    }
+
     @MainActor
     private func processQuickReminderCompletion(
         _ request: SaleReminderQuickCompletionRequest
     ) async -> SaleReminderActionFeedback? {
-        guard store.isAuthenticated else {
-            return nil
-        }
-
         if store.offer(id: request.target.offerID) == nil {
             await store.handleSaleReminderTarget(request.target)
             store.consumeInboundSaleReminderTarget()
@@ -153,10 +172,6 @@ struct Real_O_WhoApp: App {
     private func processQuickReminderSnooze(
         _ request: SaleReminderSnoozeRequest
     ) async -> SaleReminderActionFeedback? {
-        guard store.isAuthenticated else {
-            return nil
-        }
-
         if store.offer(id: request.target.offerID) == nil {
             await store.handleSaleReminderTarget(request.target)
             store.consumeInboundSaleReminderTarget()
@@ -465,7 +480,7 @@ struct Real_O_WhoApp: App {
     }
 
     private var reminderSyncKey: String {
-        guard store.isAuthenticated else {
+        guard !store.users.isEmpty else {
             return "signed-out"
         }
 
@@ -505,11 +520,7 @@ struct Real_O_WhoApp: App {
             return SaleTaskSnapshotSyncStore.viewerID(forInvite: session.inviteID)
         }
 
-        if store.isAuthenticated {
-            return SaleTaskSnapshotSyncStore.viewerID(forUser: store.currentUserID)
-        }
-
-        return nil
+        return SaleTaskSnapshotSyncStore.viewerID(forUser: store.currentUserID)
     }
 
     private var trackedTaskSnapshotViewerIDs: [String] {
@@ -523,12 +534,10 @@ struct Real_O_WhoApp: App {
         if let session = store.legalWorkspaceSession,
            let legalOffer = store.offer(id: session.offerID) {
             relevantOffers = [legalOffer]
-        } else if store.isAuthenticated {
+        } else {
             relevantOffers = store.offers.filter {
                 $0.buyerID == store.currentUserID || $0.sellerID == store.currentUserID
             }
-        } else {
-            relevantOffers = []
         }
 
         for offer in relevantOffers {

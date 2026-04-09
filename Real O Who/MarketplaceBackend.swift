@@ -538,6 +538,10 @@ private nonisolated struct MarketplaceWireSignUpRequest: Codable, Sendable {
     var suburb: String
 }
 
+private nonisolated struct MarketplaceWireAcknowledgementEnvelope: Codable, Sendable {
+    var ok: Bool
+}
+
 nonisolated struct MarketplaceHTTPClient: Sendable {
     let configuration: MarketplaceBackendConfiguration
     private let encoder = JSONEncoder()
@@ -568,6 +572,12 @@ nonisolated struct MarketplaceHTTPClient: Sendable {
         body: Body
     ) async throws -> Response {
         try await send(path: path, method: "PUT", queryItems: [], body: body)
+    }
+
+    func delete<Response: Decodable>(
+        path: String
+    ) async throws -> Response {
+        try await send(path: path, method: "DELETE", queryItems: [], body: Optional<Int>.none)
     }
 
     private func send<Body: Encodable, Response: Decodable>(
@@ -654,6 +664,15 @@ nonisolated struct RemoteMarketplaceAuthService: MarketplaceAuthServing, Sendabl
         )
         return response.toAppModel()
     }
+
+    nonisolated func deleteAccount(
+        account _: LocalAuthAccount?,
+        user: UserProfile
+    ) async throws {
+        let _: MarketplaceWireAcknowledgementEnvelope = try await client.delete(
+            path: "v1/auth/account/\(user.id.uuidString)"
+        )
+    }
 }
 
 nonisolated struct FallbackMarketplaceAuthService: MarketplaceAuthServing, Sendable {
@@ -690,6 +709,22 @@ nonisolated struct FallbackMarketplaceAuthService: MarketplaceAuthServing, Senda
             return try await remote.createAccount(registration: registration, existingAccounts: existingAccounts)
         } catch let error as MarketplaceHTTPError where error.canFallbackToLocal {
             return try await local.createAccount(registration: registration, existingAccounts: existingAccounts)
+        }
+    }
+
+    nonisolated func deleteAccount(
+        account: LocalAuthAccount?,
+        user: UserProfile
+    ) async throws {
+        guard configuration.mode == .remotePreferred else {
+            try await local.deleteAccount(account: account, user: user)
+            return
+        }
+
+        do {
+            try await remote.deleteAccount(account: account, user: user)
+        } catch let error as MarketplaceHTTPError where error.canFallbackToLocal {
+            try await local.deleteAccount(account: account, user: user)
         }
     }
 }
@@ -742,7 +777,7 @@ nonisolated struct LocalLegalProfessionalSearch: MarketplaceLegalProfessionalSea
             address: "Level 8, 123 Adelaide Street, Brisbane City QLD 4000",
             suburb: "Brisbane City",
             phoneNumber: "(07) 3123 4501",
-            websiteURL: URL(string: "https://example.com/brisbane-conveyancing-group"),
+            websiteURL: URL(string: "https://www.google.com/search?q=Brisbane+Conveyancing+Group+Brisbane+City+QLD"),
             mapsURL: URL(string: "https://maps.google.com/?q=123+Adelaide+Street+Brisbane+City+QLD+4000"),
             latitude: -27.4685,
             longitude: 153.0286,
@@ -758,7 +793,7 @@ nonisolated struct LocalLegalProfessionalSearch: MarketplaceLegalProfessionalSea
             address: "42 Eagle Street, Brisbane City QLD 4000",
             suburb: "Brisbane City",
             phoneNumber: "(07) 3555 1180",
-            websiteURL: URL(string: "https://example.com/rivercity-property-law"),
+            websiteURL: URL(string: "https://www.google.com/search?q=Rivercity+Property+Law+Brisbane+Property+Solicitor"),
             mapsURL: URL(string: "https://maps.google.com/?q=42+Eagle+Street+Brisbane+City+QLD+4000"),
             latitude: -27.4708,
             longitude: 153.0304,
@@ -774,7 +809,7 @@ nonisolated struct LocalLegalProfessionalSearch: MarketplaceLegalProfessionalSea
             address: "19 Boundary Street, West End QLD 4101",
             suburb: "West End",
             phoneNumber: "(07) 3844 9082",
-            websiteURL: URL(string: "https://example.com/west-end-settlement"),
+            websiteURL: URL(string: "https://www.google.com/search?q=West+End+Settlement+Co+Property+Law+Brisbane"),
             mapsURL: URL(string: "https://maps.google.com/?q=19+Boundary+Street+West+End+QLD+4101"),
             latitude: -27.4812,
             longitude: 153.0099,
@@ -790,7 +825,7 @@ nonisolated struct LocalLegalProfessionalSearch: MarketplaceLegalProfessionalSea
             address: "77 Oxford Street, Bulimba QLD 4171",
             suburb: "Bulimba",
             phoneNumber: "(07) 3399 4412",
-            websiteURL: URL(string: "https://example.com/bulimba-legal"),
+            websiteURL: URL(string: "https://www.google.com/search?q=Bulimba+Legal+Conveyancing+QLD"),
             mapsURL: URL(string: "https://maps.google.com/?q=77+Oxford+Street+Bulimba+QLD+4171"),
             latitude: -27.4523,
             longitude: 153.0577,
@@ -806,7 +841,7 @@ nonisolated struct LocalLegalProfessionalSearch: MarketplaceLegalProfessionalSea
             address: "3 Wembley Road, Logan Central QLD 4114",
             suburb: "Logan Central",
             phoneNumber: "(07) 3290 7750",
-            websiteURL: URL(string: "https://example.com/logan-private-sale-law"),
+            websiteURL: URL(string: "https://www.google.com/search?q=Logan+Private+Sale+Law+Logan+QLD"),
             mapsURL: URL(string: "https://maps.google.com/?q=3+Wembley+Road+Logan+Central+QLD+4114"),
             latitude: -27.6394,
             longitude: 153.1093,
@@ -822,7 +857,7 @@ nonisolated struct LocalLegalProfessionalSearch: MarketplaceLegalProfessionalSea
             address: "9 Short Street, Southport QLD 4215",
             suburb: "Southport",
             phoneNumber: "(07) 5528 4100",
-            websiteURL: URL(string: "https://example.com/gold-coast-conveyancing"),
+            websiteURL: URL(string: "https://www.google.com/search?q=Gold+Coast+Conveyancing+Studio+Southport+QLD"),
             mapsURL: URL(string: "https://maps.google.com/?q=9+Short+Street+Southport+QLD+4215"),
             latitude: -27.9682,
             longitude: 153.4086,

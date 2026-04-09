@@ -145,7 +145,6 @@ struct ContentView: View {
             .environmentObject(reminders)
         }
         .task(id: store.currentUserID) {
-            guard store.isAuthenticated else { return }
             await store.refreshListings()
             await store.refreshMarketplaceState()
             await store.refreshOffers()
@@ -496,6 +495,7 @@ private struct SellView: View {
     @EnvironmentObject private var store: MarketplaceStore
 
     @State private var isShowingCreateListing = false
+    @State private var listingModerationErrorMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -529,8 +529,24 @@ private struct SellView: View {
             }
             .sheet(isPresented: $isShowingCreateListing) {
                 CreateListingSheet { draft in
-                    store.createListing(from: draft, sellerID: store.currentUserID)
+                    do {
+                        try store.createListing(from: draft, sellerID: store.currentUserID)
+                    } catch {
+                        listingModerationErrorMessage = error.localizedDescription
+                        throw error
+                    }
                 }
+            }
+            .alert(
+                "Listing needs changes",
+                isPresented: Binding(
+                    get: { listingModerationErrorMessage != nil },
+                    set: { if !$0 { listingModerationErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(listingModerationErrorMessage ?? "")
             }
         }
     }
@@ -632,9 +648,15 @@ private struct MessagesView: View {
 private struct AccountView: View {
     @EnvironmentObject private var store: MarketplaceStore
     @EnvironmentObject private var messaging: EncryptedMessagingService
+    @EnvironmentObject private var taskSnapshots: SaleTaskSnapshotSyncStore
 
     @State private var switchNotice: String?
+    @State private var authMode: AuthMode = .createAccount
+    @State private var isShowingAuth = false
     @State private var isSwitchingDemo = false
+    @State private var isDeletingAccount = false
+    @State private var isShowingDeleteAccountConfirmation = false
+    @State private var deleteAccountErrorMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -654,13 +676,47 @@ private struct AccountView: View {
                         )
                     }
                     currentAccountCard
+                    safetyControlsCard
+                    dataAndPrivacyCard
+                    accountAuthCard
                     marketplaceArchitecture
                     legalLinks
                 }
                 .padding(20)
             }
+            .sheet(isPresented: $isShowingAuth) {
+                AuthenticationView(
+                    canDismiss: true,
+                    initialMode: authMode
+                ) {
+                    isShowingAuth = false
+                }
+                    .environmentObject(store)
+                    .environmentObject(messaging)
+            }
             .background(BrandPalette.background.ignoresSafeArea())
             .navigationTitle("Account")
+            .alert("Delete account?", isPresented: $isShowingDeleteAccountConfirmation) {
+                Button("Delete Account", role: .destructive) {
+                    Task {
+                        await deleteCurrentAccount()
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes your launch account and local sale data from this device. You can create a new account later.")
+            }
+            .alert(
+                "Couldn’t delete account",
+                isPresented: Binding(
+                    get: { deleteAccountErrorMessage != nil },
+                    set: { if !$0 { deleteAccountErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(deleteAccountErrorMessage ?? "")
+            }
         }
     }
 
@@ -691,7 +747,7 @@ private struct AccountView: View {
 
     private var currentAccountCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Signed in account")
+            Text("Active profile")
                 .font(.headline)
 
             PersonaCard(user: store.currentUser, isSelected: true)
@@ -719,10 +775,10 @@ private struct AccountView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                Text("Quick demo switching")
+                Text("Demo profile switching")
                     .font(.subheadline.weight(.semibold))
 
-                Text("Jump between the seeded buyer and seller accounts without typing credentials again.")
+                Text("Switch between the seeded buyer and seller profiles for review or testing.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
@@ -740,11 +796,58 @@ private struct AccountView: View {
                     )
                 }
             }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(.white)
+        )
+    }
 
-            Button("Sign Out") {
-                store.signOut()
+    private var safetyControlsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Safety controls")
+                .font(.headline)
+
+            Text("Secure Messages includes an abusive-language filter, in-thread reporting, blocking, and direct support links so App Review and customers can find moderation tools quickly.")
+                .foregroundStyle(.secondary)
+
+            AdaptiveTagGrid(minimum: 150) {
+                FeatureTile(
+                    title: "Safety filter",
+                    subtitle: "Threatening or abusive message text is blocked from posting and hidden if it appears in a synced thread."
+                )
+                FeatureTile(
+                    title: "Report tools",
+                    subtitle: "Use the menu inside Secure Messages to report a conversation or a specific incoming message."
+                )
+                FeatureTile(
+                    title: "Block control",
+                    subtitle: "Block an abusive buyer or seller from the same Secure Messages menu."
+                )
+                FeatureTile(
+                    title: "Support links",
+                    subtitle: "Website, support, privacy, and email contact stay visible in Account and on the sign-in screen."
+                )
             }
-            .buttonStyle(.bordered)
+        }
+    }
+
+    private var dataAndPrivacyCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Data and privacy")
+                .font(.headline)
+
+            Text("Account deletion is available directly in the app so users can remove their launch account and the local sale data tied to it without leaving Real O Who.")
+                .foregroundStyle(.secondary)
+
+            Button(isDeletingAccount ? "Deleting Account..." : "Delete Account") {
+                isShowingDeleteAccountConfirmation = true
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .disabled(isDeletingAccount)
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -821,6 +924,37 @@ private struct AccountView: View {
         }
     }
 
+    private var accountAuthCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Account setup")
+                .font(.headline)
+
+            Text("Use sign in or create an account to personalize this device and add your own listings or offers later.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                Button("Sign In") {
+                    authMode = .signIn
+                    isShowingAuth = true
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("Create Account") {
+                    authMode = .createAccount
+                    isShowingAuth = true
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(.white)
+        )
+    }
+
     private var legalLinks: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Support and legal")
@@ -846,6 +980,21 @@ private struct AccountView: View {
             switchNotice = "Signed in as \(account.subtitle)."
         } catch {
             switchNotice = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func deleteCurrentAccount() async {
+        let deletedUserID = store.currentUserID
+        isDeletingAccount = true
+        defer { isDeletingAccount = false }
+
+        do {
+            try await store.deleteCurrentAccount()
+            messaging.removeUserData(for: deletedUserID)
+            taskSnapshots.removeState(for: SaleTaskSnapshotSyncStore.viewerID(forUser: deletedUserID))
+        } catch {
+            deleteAccountErrorMessage = error.localizedDescription
         }
     }
 }
@@ -2115,6 +2264,11 @@ private struct ListingDetailView: View {
         amount: Int,
         conditions: String
     ) {
+        if let moderationIssue = MarketplaceSafetyPolicy.moderationIssue(for: conditions) {
+            notice = ListingNotice(message: moderationIssue.localizedDescription)
+            return
+        }
+
         guard let buyer = store.user(id: store.currentUserID),
               let seller = store.user(id: listing.sellerID),
               let outcome = store.submitOffer(
@@ -2163,6 +2317,11 @@ private struct ListingDetailView: View {
         amount: Int,
         conditions: String
     ) {
+        if let moderationIssue = MarketplaceSafetyPolicy.moderationIssue(for: conditions) {
+            notice = ListingNotice(message: moderationIssue.localizedDescription)
+            return
+        }
+
         guard let offer,
               let outcome = store.respondToOffer(
             offerID: offer.id,
@@ -2349,21 +2508,54 @@ private struct ListingDetailView: View {
 private struct ConversationThreadView: View {
     @EnvironmentObject private var store: MarketplaceStore
     @EnvironmentObject private var messaging: EncryptedMessagingService
+    @Environment(\.openURL) private var openURL
 
     let threadID: UUID
     let onOpenSaleTask: (SaleReminderNavigationTarget) -> Void
 
     @State private var draft = ""
+    @State private var moderationNotice: String?
+    @State private var reportContext: ConversationSafetyReportContext?
+    @State private var reportConfirmationMessage: String?
+    @State private var isShowingBlockConfirmation = false
 
     var body: some View {
         if let thread = messaging.thread(id: threadID) {
             let listing = store.listing(id: thread.listingID)
             let currentUser = store.currentUser
             let counterpart = thread.participantIDs.first { $0 != currentUser.id }.flatMap { store.user(id: $0) }
+            let isBlocked = counterpart.map { messaging.isUserBlocked($0.id, for: currentUser.id) } ?? false
 
             VStack(spacing: 0) {
                 if let listing {
                     ConversationHeader(listing: listing, counterpart: counterpart, encryptionLabel: thread.encryptionLabel)
+                }
+
+                if let moderationNotice {
+                    HighlightInformationCard(
+                        title: "Message blocked",
+                        message: moderationNotice,
+                        supporting: "Real O Who blocks abusive or threatening text before it can be posted."
+                    )
+                    .padding([.horizontal, .top], 16)
+                }
+
+                if let reportConfirmationMessage {
+                    HighlightInformationCard(
+                        title: "Safety report saved",
+                        message: reportConfirmationMessage,
+                        supporting: "Support contact details stay available in Account and in this thread menu."
+                    )
+                    .padding([.horizontal, .top], 16)
+                }
+
+                if isBlocked, let counterpart {
+                    HighlightInformationCard(
+                        title: "User blocked",
+                        message: "You’ve blocked \(counterpart.name). Existing messages stay visible, but new direct messages are disabled until you unblock them.",
+                        supporting: "Use the menu in the top-right corner if you need to unblock or file another report."
+                    )
+                    .padding([.horizontal, .top], 16)
                 }
 
                 ScrollViewReader { proxy in
@@ -2376,6 +2568,37 @@ private struct ConversationThreadView: View {
                                     isCurrentUser: message.senderID == currentUser.id,
                                     onOpenSaleTask: onOpenSaleTask
                                 )
+                                .contextMenu {
+                                    if !message.isSystem,
+                                       message.senderID != currentUser.id,
+                                       let counterpart {
+                                        Button {
+                                            reportContext = ConversationSafetyReportContext(
+                                                conversationID: thread.id,
+                                                listingID: thread.listingID,
+                                                reportedUserID: counterpart.id,
+                                                title: "Report message from \(counterpart.name)",
+                                                messageID: message.id
+                                            )
+                                        } label: {
+                                            Label("Report Message", systemImage: "flag.fill")
+                                        }
+
+                                        if isBlocked {
+                                            Button {
+                                                messaging.unblockUser(counterpart.id, for: currentUser.id)
+                                            } label: {
+                                                Label("Unblock \(counterpart.name)", systemImage: "person.crop.circle.badge.checkmark")
+                                            }
+                                        } else {
+                                            Button(role: .destructive) {
+                                                isShowingBlockConfirmation = true
+                                            } label: {
+                                                Label("Block \(counterpart.name)", systemImage: "hand.raised.fill")
+                                            }
+                                        }
+                                    }
+                                }
                                 .id(message.id)
                             }
                         }
@@ -2389,32 +2612,187 @@ private struct ConversationThreadView: View {
 
                 Divider()
 
-                HStack(alignment: .bottom, spacing: 12) {
-                    TextField("Message buyer or seller", text: $draft, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-
-                    Button("Send") {
-                        guard let listing,
-                              let counterpart else { return }
-
-                        _ = messaging.sendMessage(
-                            listing: listing,
-                            from: currentUser,
-                            to: counterpart,
-                            body: draft
-                        )
-                        draft = ""
+                if isBlocked, let counterpart {
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Messaging paused")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Unblock \(counterpart.name) from the menu if you want to resume direct contact.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .padding(16)
+                    .background(.white)
+                } else {
+                    HStack(alignment: .bottom, spacing: 12) {
+                        TextField("Message buyer or seller", text: $draft, axis: .vertical)
+                            .textFieldStyle(.roundedBorder)
+
+                        Button("Send") {
+                            guard let listing,
+                                  let counterpart else { return }
+
+                            if let moderationIssue = messaging.moderationIssue(forDraft: draft) {
+                                moderationNotice = moderationIssue.localizedDescription
+                                return
+                            }
+
+                            _ = messaging.sendMessage(
+                                listing: listing,
+                                from: currentUser,
+                                to: counterpart,
+                                body: draft
+                            )
+                            moderationNotice = nil
+                            draft = ""
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    .padding(16)
+                    .background(.white)
                 }
-                .padding(16)
-                .background(.white)
             }
             .navigationTitle(counterpart?.name ?? "Conversation")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        if let counterpart {
+                            Button {
+                                reportContext = ConversationSafetyReportContext(
+                                    conversationID: thread.id,
+                                    listingID: thread.listingID,
+                                    reportedUserID: counterpart.id,
+                                    title: "Report conversation with \(counterpart.name)",
+                                    messageID: nil
+                                )
+                            } label: {
+                                Label("Report Conversation", systemImage: "flag.fill")
+                            }
+
+                            if isBlocked {
+                                Button {
+                                    messaging.unblockUser(counterpart.id, for: currentUser.id)
+                                } label: {
+                                    Label("Unblock \(counterpart.name)", systemImage: "person.crop.circle.badge.checkmark")
+                                }
+                            } else {
+                                Button(role: .destructive) {
+                                    isShowingBlockConfirmation = true
+                                } label: {
+                                    Label("Block \(counterpart.name)", systemImage: "hand.raised.fill")
+                                }
+                            }
+                        }
+
+                        Button {
+                            openURL(LegalLinks.support)
+                        } label: {
+                            Label("Safety & Support", systemImage: "questionmark.bubble")
+                        }
+
+                        Button {
+                            openURL(LegalLinks.mail)
+                        } label: {
+                            Label("Email Support", systemImage: "envelope.fill")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                }
+            }
+            .sheet(item: $reportContext) { context in
+                ConversationSafetyReportSheet(
+                    context: context,
+                    onSubmit: { reason, notes in
+                        _ = messaging.reportConversation(
+                            conversationID: context.conversationID,
+                            listingID: context.listingID,
+                            reporterID: currentUser.id,
+                            reportedUserID: context.reportedUserID,
+                            messageID: context.messageID,
+                            reason: reason,
+                            notes: notes
+                        )
+                        reportConfirmationMessage = context.messageID == nil
+                            ? "We saved your conversation report. You can still contact support directly if the issue needs urgent help."
+                            : "We saved your message report. You can still contact support directly if the issue needs urgent help."
+                    }
+                )
+            }
+            .alert("Block this user?", isPresented: $isShowingBlockConfirmation) {
+                Button("Block User", role: .destructive) {
+                    if let counterpart {
+                        messaging.blockUser(counterpart.id, for: currentUser.id)
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Blocking stops new direct messages in this thread until you choose to unblock the other person.")
+            }
         } else {
             EmptyPanel(message: "Conversation unavailable.")
                 .padding()
+        }
+    }
+}
+
+private struct ConversationSafetyReportContext: Identifiable {
+    let conversationID: UUID
+    let listingID: UUID
+    let reportedUserID: UUID
+    let title: String
+    let messageID: UUID?
+
+    var id: String {
+        "\(conversationID.uuidString)-\(messageID?.uuidString ?? "conversation")"
+    }
+}
+
+private struct ConversationSafetyReportSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let context: ConversationSafetyReportContext
+    let onSubmit: (MarketplaceSafetyReportReason, String) -> Void
+
+    @State private var reason: MarketplaceSafetyReportReason = .harassment
+    @State private var notes = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Reason") {
+                    Picker("Reason", selection: $reason) {
+                        ForEach(MarketplaceSafetyReportReason.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                Section("Details") {
+                    TextEditor(text: $notes)
+                        .frame(minHeight: 140)
+                    Text("Add a few words so support can understand what happened. This note is saved with the report on the device.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Report Safety Issue")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Submit") {
+                        onSubmit(reason, notes)
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 }
@@ -2774,11 +3152,19 @@ private struct CreateListingSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var draft = ListingDraft()
-    let onCreate: (ListingDraft) -> Void
+    @State private var errorMessage: String?
+    let onCreate: (ListingDraft) throws -> Void
 
     var body: some View {
         NavigationStack {
             Form {
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage)
+                            .foregroundStyle(.red)
+                    }
+                }
+
                 Section("Overview") {
                     TextField("Listing title", text: $draft.title)
                     TextField("Headline", text: $draft.headline)
@@ -2814,8 +3200,12 @@ private struct CreateListingSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Publish") {
-                        onCreate(draft)
-                        dismiss()
+                        do {
+                            try onCreate(draft)
+                            dismiss()
+                        } catch {
+                            errorMessage = error.localizedDescription
+                        }
                     }
                     .disabled(!draft.canSubmit)
                 }
@@ -3386,11 +3776,7 @@ private struct SaleUpdatesCard: View {
             return SaleTaskSnapshotSyncStore.viewerID(forInvite: session.inviteID)
         }
 
-        if store.isAuthenticated {
-            return SaleTaskSnapshotSyncStore.viewerID(forUser: store.currentUserID)
-        }
-
-        return nil
+        return SaleTaskSnapshotSyncStore.viewerID(forUser: store.currentUserID)
     }
 
     var body: some View {
@@ -3683,6 +4069,7 @@ private struct MessageBubble: View {
     }
 
     @EnvironmentObject private var store: MarketplaceStore
+    @EnvironmentObject private var messaging: EncryptedMessagingService
 
     let message: EncryptedMessage
     let sender: UserProfile?
@@ -3703,8 +4090,14 @@ private struct MessageBubble: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    Text(message.body)
-                        .foregroundStyle(messageTextColor)
+                    Group {
+                        if isSafetyFilteredMessage {
+                            Text(displayBody).italic()
+                        } else {
+                            Text(displayBody)
+                        }
+                    }
+                    .foregroundStyle(messageTextColor)
 
                     Text(timeString(message.sentAt))
                         .font(.caption2)
@@ -3719,6 +4112,14 @@ private struct MessageBubble: View {
 
             if !isCurrentUser { Spacer(minLength: 44) }
         }
+    }
+
+    private var displayBody: String {
+        messaging.filteredDisplayBody(for: message)
+    }
+
+    private var isSafetyFilteredMessage: Bool {
+        !message.isSystem && displayBody != message.body
     }
 
     @ViewBuilder
@@ -3857,15 +4258,11 @@ private struct MessageBubble: View {
     }
 
     private var taskSnapshotViewerID: String? {
-        if store.isAuthenticated {
-            return SaleTaskSnapshotSyncStore.viewerID(forUser: store.currentUserID)
-        }
-
         if let session = store.legalWorkspaceSession {
             return SaleTaskSnapshotSyncStore.viewerID(forInvite: session.inviteID)
         }
 
-        return nil
+        return SaleTaskSnapshotSyncStore.viewerID(forUser: store.currentUserID)
     }
 
     private var messageDetailLines: [String] {
@@ -3888,6 +4285,10 @@ private struct MessageBubble: View {
     }
 
     private var messageTextColor: Color {
+        if isSafetyFilteredMessage {
+            return .secondary
+        }
+
         if message.isSystem {
             return .secondary
         }

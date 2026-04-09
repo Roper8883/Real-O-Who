@@ -1,6 +1,6 @@
 import SwiftUI
 
-private enum AuthMode: String, CaseIterable, Identifiable {
+enum AuthMode: String, CaseIterable, Identifiable {
     case signIn
     case createAccount
 
@@ -63,6 +63,20 @@ private enum DemoAccessAccount: String, CaseIterable, Identifiable {
 struct AuthenticationView: View {
     @EnvironmentObject private var store: MarketplaceStore
     @EnvironmentObject private var messaging: EncryptedMessagingService
+    @Environment(\.dismiss) private var dismiss
+    private let onComplete: (() -> Void)?
+    private let canDismiss: Bool
+    private let initialMode: AuthMode
+
+    init(
+        canDismiss: Bool = false,
+        initialMode: AuthMode = .createAccount,
+        onComplete: (() -> Void)? = nil
+    ) {
+        self.canDismiss = canDismiss
+        self.initialMode = initialMode
+        self.onComplete = onComplete
+    }
 
     @State private var mode: AuthMode = .createAccount
     @State private var signInEmail = ""
@@ -88,6 +102,20 @@ struct AuthenticationView: View {
                     demoAccessCard
                     legalWorkspaceInviteCard
 
+                    if let lifecycleNotice = store.authLifecycleNotice {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Account updated")
+                                .font(.headline)
+                            Text(lifecycleNotice)
+                            Text("You can create a new launch account or sign in again at any time.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(18)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(authPanel)
+                    }
+
                     if let errorMessage {
                         errorCard(message: errorMessage)
                     }
@@ -105,7 +133,18 @@ struct AuthenticationView: View {
             }
             .background(authBackground.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Start")
+            .toolbar {
+                if canDismiss {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") {
+                            dismiss()
+                        }
+                    }
+                }
+            }
             .onAppear {
+                mode = initialMode
                 if let inviteCode = store.inboundLegalInviteCode, !inviteCode.isEmpty {
                     legalInviteCode = inviteCode
                 }
@@ -206,7 +245,7 @@ struct AuthenticationView: View {
                 authField(
                     title: "Email",
                     text: $signInEmail,
-                    prompt: "you@example.com",
+                    prompt: "you@realowho.app",
                     keyboard: .emailAddress,
                     autocapitalization: .never,
                     disableAutocorrection: true
@@ -260,7 +299,7 @@ struct AuthenticationView: View {
                 authField(
                     title: "Email",
                     text: $createEmail,
-                    prompt: "you@example.com",
+                    prompt: "you@realowho.app",
                     keyboard: .emailAddress,
                     autocapitalization: .never,
                     disableAutocorrection: true
@@ -488,6 +527,10 @@ struct AuthenticationView: View {
         do {
             try await store.signIn(email: signInEmail, password: signInPassword)
             await messaging.activateSession(for: store.currentUserID)
+            onComplete?()
+            if canDismiss {
+                dismiss()
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -508,6 +551,10 @@ struct AuthenticationView: View {
                 suburb: createSuburb
             )
             await messaging.activateSession(for: store.currentUserID)
+            onComplete?()
+            if canDismiss {
+                dismiss()
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -524,6 +571,10 @@ struct AuthenticationView: View {
             let didOpen = try await store.openLegalWorkspace(inviteCode: legalInviteCode)
             if !didOpen {
                 errorMessage = "That legal workspace invite could not be found yet."
+            }
+            onComplete?()
+            if canDismiss {
+                dismiss()
             }
         } catch let error as MarketplaceHTTPError where error.canFallbackToLocal {
             errorMessage = "The invite could not be loaded right now. Check the backend or try again on the device that already has the sale cached."

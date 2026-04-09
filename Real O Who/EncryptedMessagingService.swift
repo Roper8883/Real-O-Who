@@ -6,6 +6,7 @@ import Security
 @MainActor
 final class EncryptedMessagingService: ObservableObject {
     @Published private(set) var conversations: [EncryptedConversation] = []
+    @Published private(set) var safetyReports: [ConversationSafetyReport] = []
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -14,6 +15,7 @@ final class EncryptedMessagingService: ObservableObject {
     private let isEphemeral: Bool
     private let keychain = MessagingKeychain()
     private let remoteSync: any MarketplaceConversationSyncing
+    private var blockedUserIDsByViewerID: [UUID: Set<UUID>] = [:]
 
     init(
         fileManager: FileManager = .default,
@@ -68,6 +70,74 @@ final class EncryptedMessagingService: ObservableObject {
         conversations.first { $0.id == id }
     }
 
+    func moderationIssue(forDraft body: String) -> MarketplaceContentModerationIssue? {
+        MarketplaceSafetyPolicy.moderationIssue(for: body)
+    }
+
+    func filteredDisplayBody(for message: EncryptedMessage) -> String {
+        guard !message.isSystem,
+              MarketplaceSafetyPolicy.shouldHideMessage(message.body) else {
+            return message.body
+        }
+
+        return MarketplaceSafetyPolicy.filteredMessagePlaceholder
+    }
+
+    func isUserBlocked(_ blockedUserID: UUID, for viewerID: UUID) -> Bool {
+        blockedUserIDsByViewerID[viewerID]?.contains(blockedUserID) == true
+    }
+
+    func blockUser(_ blockedUserID: UUID, for viewerID: UUID) {
+        var blockedUsers = blockedUserIDsByViewerID[viewerID] ?? []
+        blockedUsers.insert(blockedUserID)
+        blockedUserIDsByViewerID[viewerID] = blockedUsers
+        persist()
+    }
+
+    func unblockUser(_ blockedUserID: UUID, for viewerID: UUID) {
+        var blockedUsers = blockedUserIDsByViewerID[viewerID] ?? []
+        blockedUsers.remove(blockedUserID)
+        blockedUserIDsByViewerID[viewerID] = blockedUsers
+        persist()
+    }
+
+    @discardableResult
+    func reportConversation(
+        conversationID: UUID,
+        listingID: UUID,
+        reporterID: UUID,
+        reportedUserID: UUID,
+        messageID: UUID? = nil,
+        reason: MarketplaceSafetyReportReason,
+        notes: String
+    ) -> ConversationSafetyReport {
+        let report = ConversationSafetyReport(
+            conversationID: conversationID,
+            listingID: listingID,
+            reporterID: reporterID,
+            reportedUserID: reportedUserID,
+            messageID: messageID,
+            reason: reason,
+            notes: notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        safetyReports.insert(report, at: 0)
+        persist()
+        return report
+    }
+
+    func removeUserData(for userID: UUID) {
+        conversations.removeAll { $0.participantIDs.contains(userID) }
+        safetyReports.removeAll { $0.reporterID == userID || $0.reportedUserID == userID }
+        blockedUserIDsByViewerID.removeValue(forKey: userID)
+        blockedUserIDsByViewerID = blockedUserIDsByViewerID.reduce(into: [:]) { partialResult, entry in
+            let filteredBlockedUsers = Set(entry.value.filter { $0 != userID })
+            if !filteredBlockedUsers.isEmpty {
+                partialResult[entry.key] = filteredBlockedUsers
+            }
+        }
+        persist()
+    }
+
     func ensureConversation(
         listing: PropertyListing,
         buyer: UserProfile,
@@ -115,6 +185,16 @@ final class EncryptedMessagingService: ObservableObject {
     ) -> EncryptedConversation? {
         let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedBody.isEmpty || isSystem else { return nil }
+
+        if !isSystem {
+            guard !isUserBlocked(recipient.id, for: sender.id) else {
+                return nil
+            }
+
+            guard moderationIssue(forDraft: trimmedBody) == nil else {
+                return nil
+            }
+        }
 
         let thread = ensureConversation(listing: listing, buyer: sender.role == .buyer ? sender : recipient, seller: sender.role == .seller ? sender : recipient)
         guard let index = conversations.firstIndex(where: { $0.id == thread.id }) else { return nil }
@@ -240,6 +320,10 @@ final class EncryptedMessagingService: ObservableObject {
             let decrypted = try AES.GCM.open(sealedBox, using: key)
             let snapshot = try decoder.decode(ConversationSnapshot.self, from: decrypted)
             conversations = snapshot.conversations
+            safetyReports = snapshot.safetyReports
+            blockedUserIDsByViewerID = Dictionary(
+                uniqueKeysWithValues: snapshot.blockedUsers.map { ($0.viewerID, Set($0.blockedUserIDs)) }
+            )
             sortThreads()
         } catch {
             assertionFailure("Failed to load encrypted conversations: \(error.localizedDescription)")
@@ -256,7 +340,18 @@ final class EncryptedMessagingService: ObservableObject {
                 attributes: nil
             )
 
-            let snapshot = ConversationSnapshot(conversations: conversations)
+            let snapshot = ConversationSnapshot(
+                conversations: conversations,
+                safetyReports: safetyReports,
+                blockedUsers: blockedUserIDsByViewerID
+                    .map { key, value in
+                        ConversationBlockState(
+                            viewerID: key,
+                            blockedUserIDs: Array(value).sorted { $0.uuidString < $1.uuidString }
+                        )
+                    }
+                    .sorted { $0.viewerID.uuidString < $1.viewerID.uuidString }
+            )
             let plaintext = try encoder.encode(snapshot)
             let key = try keychain.loadOrCreateKey()
             let sealed = try AES.GCM.seal(plaintext, using: key)
@@ -346,8 +441,38 @@ struct EncryptedMessage: Identifiable, Codable, Hashable {
     var saleTaskTarget: SaleReminderNavigationTarget?
 }
 
+private struct ConversationBlockState: Codable {
+    var viewerID: UUID
+    var blockedUserIDs: [UUID]
+}
+
 private struct ConversationSnapshot: Codable {
     var conversations: [EncryptedConversation]
+    var safetyReports: [ConversationSafetyReport]
+    var blockedUsers: [ConversationBlockState]
+
+    init(
+        conversations: [EncryptedConversation],
+        safetyReports: [ConversationSafetyReport] = [],
+        blockedUsers: [ConversationBlockState] = []
+    ) {
+        self.conversations = conversations
+        self.safetyReports = safetyReports
+        self.blockedUsers = blockedUsers
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case conversations
+        case safetyReports
+        case blockedUsers
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        conversations = try container.decodeIfPresent([EncryptedConversation].self, forKey: .conversations) ?? []
+        safetyReports = try container.decodeIfPresent([ConversationSafetyReport].self, forKey: .safetyReports) ?? []
+        blockedUsers = try container.decodeIfPresent([ConversationBlockState].self, forKey: .blockedUsers) ?? []
+    }
 }
 
 private struct MessagingKeychain {

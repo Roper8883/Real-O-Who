@@ -16,6 +16,7 @@ final class MarketplaceStore: ObservableObject {
     @Published private(set) var inboundLegalInviteCode: String?
     @Published private(set) var inboundLegalInviteErrorMessage: String?
     @Published private(set) var inboundSaleReminderTarget: SaleReminderNavigationTarget?
+    @Published private(set) var authLifecycleNotice: String?
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -75,13 +76,18 @@ final class MarketplaceStore: ObservableObject {
             load()
         }
 
+        if !isEphemeral && sessionUserID == nil, !users.isEmpty {
+            sessionUserID = currentUserID
+            persist()
+        }
+
         if favoriteListingIDs.isEmpty {
             restoreMarketplaceState(for: currentUserID)
         }
     }
 
     var currentUser: UserProfile {
-        users.first(where: { $0.id == currentUserID }) ?? users[0]
+        users.first(where: { $0.id == currentUserID }) ?? users.first ?? MarketplaceSeed.users[0]
     }
 
     var isAuthenticated: Bool {
@@ -336,6 +342,7 @@ final class MarketplaceStore: ObservableObject {
         currentUserID = session.user.id
         sessionUserID = session.user.id
         restoreMarketplaceState(for: session.user.id)
+        authLifecycleNotice = nil
         persist()
     }
 
@@ -363,6 +370,7 @@ final class MarketplaceStore: ObservableObject {
         currentUserID = session.user.id
         sessionUserID = session.user.id
         restoreMarketplaceState(for: session.user.id)
+        authLifecycleNotice = nil
         persist()
         return session.user
     }
@@ -370,6 +378,24 @@ final class MarketplaceStore: ObservableObject {
     func signOut() {
         sessionUserID = nil
         persist()
+    }
+
+    func deleteCurrentAccount() async throws {
+        let deletedUser = currentUser
+        let deletedAccount = currentAccount
+
+        try await authService.deleteAccount(
+            account: deletedAccount,
+            user: deletedUser
+        )
+
+        purgeLocalData(forDeletedUserID: deletedUser.id)
+        authLifecycleNotice = "Account deleted. Local account data has been removed from this device."
+        persist()
+    }
+
+    func clearAuthLifecycleNotice() {
+        authLifecycleNotice = nil
     }
 
     func closeLegalWorkspace() {
@@ -1139,7 +1165,13 @@ final class MarketplaceStore: ObservableObject {
         )
     }
 
-    func createListing(from draft: ListingDraft, sellerID: UUID) {
+    func createListing(from draft: ListingDraft, sellerID: UUID) throws {
+        if let moderationIssue = MarketplaceSafetyPolicy.moderationIssue(for: draft.title) ??
+            MarketplaceSafetyPolicy.moderationIssue(for: draft.headline) ??
+            MarketplaceSafetyPolicy.moderationIssue(for: draft.summary) {
+            throw moderationIssue
+        }
+
         guard let askingPrice = Int(draft.priceText.filter(\.isNumber)) else { return }
 
         let features = draft.featuresText
@@ -1252,7 +1284,9 @@ final class MarketplaceStore: ObservableObject {
                 attributes: nil
             )
 
-            userMarketplaceStatesByID[currentUserID] = makeCurrentUserMarketplaceState()
+            if users.contains(where: { $0.id == currentUserID }) {
+                userMarketplaceStatesByID[currentUserID] = makeCurrentUserMarketplaceState()
+            }
 
             let snapshot = MarketplaceSnapshot(
                 users: users,
@@ -1346,6 +1380,58 @@ final class MarketplaceStore: ObservableObject {
         favoriteListingIDs = state.favoriteListingIDs
         savedSearches = state.savedSearches
         offers = offers.filter { $0.buyerID == userID || $0.sellerID == userID }
+    }
+
+    private func purgeLocalData(forDeletedUserID userID: UUID) {
+        let removedListingIDs = Set(
+            listings
+                .filter { $0.sellerID == userID }
+                .map(\.id)
+        )
+
+        users.removeAll { $0.id == userID }
+        authAccounts.removeAll { $0.userID == userID }
+        listings.removeAll { $0.sellerID == userID }
+        offers.removeAll {
+            $0.buyerID == userID ||
+            $0.sellerID == userID ||
+            removedListingIDs.contains($0.listingID)
+        }
+        userMarketplaceStatesByID.removeValue(forKey: userID)
+        legalWorkspaceSession = nil
+        inboundLegalInviteCode = nil
+        inboundLegalInviteErrorMessage = nil
+        inboundSaleReminderTarget = nil
+
+        if sessionUserID == userID {
+            sessionUserID = nil
+        }
+
+        for listingIndex in listings.indices {
+            guard let matchingOffer = offers.first(where: { $0.listingID == listings[listingIndex].id }) else {
+                if listings[listingIndex].status != .draft {
+                    listings[listingIndex].status = .active
+                }
+                listings[listingIndex].updatedAt = .now
+                continue
+            }
+
+            listings[listingIndex].status = matchingOffer.listingStatus
+            listings[listingIndex].updatedAt = .now
+        }
+
+        if let remainingSessionUserID = sessionUserID,
+           users.contains(where: { $0.id == remainingSessionUserID }) {
+            currentUserID = remainingSessionUserID
+            restoreMarketplaceState(for: remainingSessionUserID)
+        } else if let firstRemainingUser = users.first {
+            currentUserID = firstRemainingUser.id
+            restoreMarketplaceState(for: firstRemainingUser.id)
+        } else {
+            favoriteListingIDs = []
+            savedSearches = []
+            plannedInspectionIDs = []
+        }
     }
 
     private func syncMarketplaceStateInBackground() {

@@ -41,7 +41,7 @@
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Real O Who can connect to a local development backend for testing sign-in and messaging.</string>
+	<string>Real O Who can connect to a local backend or local network services used for optional account sync and messaging when configured by the user.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

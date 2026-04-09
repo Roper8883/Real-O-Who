@@ -75,6 +75,16 @@ final class SaleTaskSnapshotSyncStore: ObservableObject {
         }
     }
 
+    func removeState(for viewerID: String?) {
+        guard let normalizedViewerID = normalizeViewerID(viewerID) else {
+            return
+        }
+
+        statesByViewerID.removeValue(forKey: normalizedViewerID)
+        loadedViewerIDs.remove(normalizedViewerID)
+        persist()
+    }
+
     func shouldEmphasizeUrgentSnapshot(
         _ snapshot: SaleTaskLiveSnapshot,
         messageID: String,

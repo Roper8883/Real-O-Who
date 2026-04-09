@@ -53,7 +53,7 @@
     {
       "id": "971d4440-4c23-4297-8e52-6b4c67ba9eff",
       "userId": "82591b54-694a-484b-9cf0-7b53d55f2623",
-      "email": "taylor@example.com",
+      "email": "taylor@realowho.app",
       "passwordSaltBase64": "2RIYNdnz/6333mvtyvuACQ==",
       "passwordHashBase64": "sHr3n2oaLIFfjRHTZ8HuyU1q2eHqbGVPlGaQfmn8sG8=",
       "createdAt": "2026-04-08T08:45:21.165Z",
@@ -472,7 +472,7 @@
           "address": "42 Eagle Street, Brisbane City QLD 4000",
           "suburb": "Brisbane City",
           "phoneNumber": "(07) 3555 1180",
-          "websiteURL": "https://example.com/rivercity-property-law",
+          "websiteURL": "https://www.google.com/search?q=Rivercity+Property+Law",
           "mapsURL": "https://maps.google.com/?q=42+Eagle+Street+Brisbane+City+QLD+4000",
           "latitude": -27.4708,
           "longitude": 153.0304,
