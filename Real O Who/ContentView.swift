@@ -650,10 +650,8 @@ private struct AccountView: View {
     @EnvironmentObject private var messaging: EncryptedMessagingService
     @EnvironmentObject private var taskSnapshots: SaleTaskSnapshotSyncStore
 
-    @State private var switchNotice: String?
     @State private var authMode: AuthMode = .createAccount
     @State private var isShowingAuth = false
-    @State private var isSwitchingDemo = false
     @State private var isDeletingAccount = false
     @State private var isShowingDeleteAccountConfirmation = false
     @State private var deleteAccountErrorMessage: String?
@@ -668,11 +666,11 @@ private struct AccountView: View {
                     )
 
                     brandPromise
-                    if let switchNotice {
+                    if let notice = store.authLifecycleNotice {
                         HighlightInformationCard(
                             title: "Account updated",
-                            message: switchNotice,
-                            supporting: "The shared demo sale is ready in Browse and Secure Messages."
+                            message: notice,
+                            supporting: "Your latest listing, offer, and messaging context is ready across the app."
                         )
                     }
                     currentAccountCard
@@ -723,7 +721,7 @@ private struct AccountView: View {
     private var brandPromise: some View {
         VStack(alignment: .leading, spacing: 14) {
             BrandLockup()
-            Text("Built for regular people selling a home privately and wanting the relationship, the negotiation, and the upside to stay direct.")
+                    Text("Built for regular people selling a home privately and wanting the relationship, the negotiation, and the upside to stay direct.")
                 .foregroundStyle(.secondary)
             HStack(spacing: 10) {
                 InfoPill(label: "Owner-first")
@@ -772,29 +770,6 @@ private struct AccountView: View {
                         : "Buyer tools are unlocked, so you can shortlist homes, plan inspections, and message owners."
                 )
                 .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Demo profile switching")
-                    .font(.subheadline.weight(.semibold))
-
-                Text("Switch between the seeded buyer and seller profiles for review or testing.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 10) {
-                    demoSwitchButton(
-                        title: "Use Demo Buyer",
-                        subtitle: "Noah Chen",
-                        account: .buyer
-                    )
-
-                    demoSwitchButton(
-                        title: "Use Demo Seller",
-                        subtitle: "Mason Wright",
-                        account: .seller
-                    )
-                }
             }
         }
         .padding(20)
@@ -855,35 +830,6 @@ private struct AccountView: View {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .fill(.white)
         )
-    }
-
-    private func demoSwitchButton(
-        title: String,
-        subtitle: String,
-        account: AccountDemoAccessAccount
-    ) -> some View {
-        Button {
-            Task {
-                await switchToDemoAccount(account)
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title)
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.primary)
-                Text(subtitle)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(BrandPalette.panel)
-            )
-        }
-        .buttonStyle(.plain)
-        .disabled(isSwitchingDemo)
     }
 
     private var marketplaceArchitecture: some View {
@@ -969,21 +915,6 @@ private struct AccountView: View {
     }
 
     @MainActor
-    private func switchToDemoAccount(_ account: AccountDemoAccessAccount) async {
-        switchNotice = nil
-        isSwitchingDemo = true
-        defer { isSwitchingDemo = false }
-
-        do {
-            try await store.signIn(email: account.email, password: account.password)
-            await messaging.activateSession(for: store.currentUserID)
-            switchNotice = "Signed in as \(account.subtitle)."
-        } catch {
-            switchNotice = error.localizedDescription
-        }
-    }
-
-    @MainActor
     private func deleteCurrentAccount() async {
         let deletedUserID = store.currentUserID
         isDeletingAccount = true
@@ -995,33 +926,6 @@ private struct AccountView: View {
             taskSnapshots.removeState(for: SaleTaskSnapshotSyncStore.viewerID(forUser: deletedUserID))
         } catch {
             deleteAccountErrorMessage = error.localizedDescription
-        }
-    }
-}
-
-private enum AccountDemoAccessAccount {
-    case buyer
-    case seller
-
-    var email: String {
-        switch self {
-        case .buyer:
-            return "noah@realowho.app"
-        case .seller:
-            return "mason@realowho.app"
-        }
-    }
-
-    var password: String {
-        "HouseDeal123!"
-    }
-
-    var subtitle: String {
-        switch self {
-        case .buyer:
-            return "Noah Chen"
-        case .seller:
-            return "Mason Wright"
         }
     }
 }

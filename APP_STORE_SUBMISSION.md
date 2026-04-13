@@ -14,7 +14,7 @@ This project is set up as a private-sale property app for direct buyer and selle
 
 ## App Review positioning
 
-- The app is reviewable without mandatory authentication. It launches directly into Browse with seeded launch users so a reviewer can run through all core flows on a clean device.
+- The app is reviewable without mandatory authentication. It launches directly into Browse with a local starter profile so a reviewer can run through all core flows on a clean device.
 - If no backend is available, listings, conversations, legal workspace, reminders, and sale activity continue to work from local storage.
 - Account deletion is available in-app at `Account > Data and privacy > Delete Account`.
 - Secure Messages exposes `Report Conversation`, `Report Message`, and `Block User` from the thread menu and message context menu.
@@ -29,15 +29,12 @@ This project is set up as a private-sale property app for direct buyer and selle
 
 ## Suggested App Review Notes
 
-`Real O Who` is a private-sale property app for buyers and sellers communicating directly. App Review can create a launch account in-app and test the core flow entirely on one device because the build falls back to local device storage when no backend is available.
+`Real O Who` is a private-sale property app for buyers and sellers communicating directly. App Review can test the core flow entirely on one device because the build falls back to local device storage when no backend is available.
 The legal links used for App Store Connect are the updated docs in this repository and should be kept in sync before every submission.
 
 For review access:
 - No account creation is required for first-run review.
-- Demo Buyer: `noah@realowho.app`
-- Demo Seller: `mason@realowho.app`
-- Demo Password: `HouseDeal123!`
-- To test all user roles, open `Account` and use `Use Demo Buyer` / `Use Demo Seller`.
+- Start with `Start now` for the local starter profile, or choose Sign In/Create Account to evaluate account-specific flows.
 - Core messaging, offers, legal rep selection, and contract packet flows work in local mode without remote backend.
 
 Review-critical controls:
@@ -66,12 +63,12 @@ Review-critical controls:
   - `APP_STORE_CONNECT_UPLOAD_TEXT.md`
 - Suggested review order:
   1. Open app
-  2. Tap `Continue now`
+  2. Tap `Start now`
   3. Browse listing flow
   4. Use Messages and secure messaging moderation menu
   5. Open legal workspace and verify contract packet handoff
   6. Confirm Account area links: support/privacy/terms/delete account
-- Reuse the exact copy above to keep App Store text and demo credentials consistent with the build.
+- Reuse the exact copy above so App Store text and implementation details stay aligned.
 
 ## Icon guideline verification (this build)
 

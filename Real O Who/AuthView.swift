@@ -22,44 +22,6 @@ private enum AuthLinks {
     static let support = URL(string: "https://roper8883.github.io/Real-O-Who/real-o-who/support/")!
 }
 
-private enum DemoAccessAccount: String, CaseIterable, Identifiable {
-    case buyer
-    case seller
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .buyer:
-            return "Demo Buyer"
-        case .seller:
-            return "Demo Seller"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .buyer:
-            return "Noah Chen"
-        case .seller:
-            return "Mason Wright"
-        }
-    }
-
-    var email: String {
-        switch self {
-        case .buyer:
-            return "noah@realowho.app"
-        case .seller:
-            return "mason@realowho.app"
-        }
-    }
-
-    var password: String {
-        "HouseDeal123!"
-    }
-}
-
 struct AuthenticationView: View {
     @EnvironmentObject private var store: MarketplaceStore
     @EnvironmentObject private var messaging: EncryptedMessagingService
@@ -99,7 +61,6 @@ struct AuthenticationView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     heroCard
                     modePicker
-                    demoAccessCard
                     legalWorkspaceInviteCard
 
                     if let lifecycleNotice = store.authLifecycleNotice {
@@ -238,7 +199,7 @@ struct AuthenticationView: View {
 
     private var signInCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Welcome back")
+            Text("Sign in to your account")
                 .font(.headline)
 
             VStack(spacing: 12) {
@@ -272,7 +233,7 @@ struct AuthenticationView: View {
                 signInPassword.isEmpty
             )
 
-            Text("Backend accounts work when the local server is running. Otherwise, device-only accounts still work.")
+            Text("Use a server account when available, or continue with your device-stored account profile.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -283,7 +244,7 @@ struct AuthenticationView: View {
 
     private var createAccountCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Create your launch account")
+            Text("Create your account")
                 .font(.headline)
 
             VStack(spacing: 12) {
@@ -352,64 +313,8 @@ struct AuthenticationView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Launch-ready storage")
                 .font(.headline)
-            Text("When `backend/server.mjs` is running, sign-in and create-account use the local API. If it is offline, the app falls back to on-device storage so launch is never blocked.")
+            Text("When the local server is running, sign-in and create account use live sync. If it is offline, the app keeps working with on-device storage.")
                 .foregroundStyle(.secondary)
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(authPanel)
-    }
-
-    private var demoAccessCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Quick demo access")
-                .font(.headline)
-
-            Text("Use the seeded buyer or seller account when the local backend is running. Both use the password `HouseDeal123!`.")
-                .foregroundStyle(.secondary)
-
-            ForEach(DemoAccessAccount.allCases) { account in
-                Button {
-                    applyDemoAccount(account)
-                } label: {
-                    HStack(alignment: .center, spacing: 12) {
-                        Image(systemName: account == .buyer ? "person.crop.circle.badge.checkmark" : "house.circle")
-                            .font(.title3)
-                            .foregroundStyle(Color(red: 0.08, green: 0.49, blue: 0.55))
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(account.title)
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(.primary)
-                            Text(account.subtitle)
-                                .font(.subheadline)
-                                .foregroundStyle(.primary)
-                            Text(account.email)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Spacer()
-
-                        Text("Use")
-                            .font(.footnote.weight(.bold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(
-                                Capsule()
-                                    .fill(Color(red: 0.90, green: 0.97, blue: 0.97))
-                            )
-                            .foregroundStyle(Color(red: 0.05, green: 0.34, blue: 0.39))
-                    }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(Color.white)
-                    )
-                }
-                .buttonStyle(.plain)
-            }
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -581,12 +486,5 @@ struct AuthenticationView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
-    }
-
-    private func applyDemoAccount(_ account: DemoAccessAccount) {
-        mode = .signIn
-        errorMessage = nil
-        signInEmail = account.email
-        signInPassword = account.password
     }
 }

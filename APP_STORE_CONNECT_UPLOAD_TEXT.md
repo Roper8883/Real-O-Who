@@ -12,12 +12,9 @@ Use this file as the source of truth for submission text and review metadata.
 - App Review Information
   - Contact Name: `Aaron Roper`
   - Contact Email: `aroper8@hotmail.com`
-  - Demo Account: `noah@realowho.app` / `HouseDeal123!`
-  - Demo Seller Account: `mason@realowho.app` / `HouseDeal123!`
   - Review Notes: 
-    - Sign in is optional.
-    - Use **Continue now** at the first screen to open seeded demo data immediately.
-    - Then complete core flows from `Browse`, `Messages`, `Sell`, and `Legal workspace`.
+    - Sign in is optional for first launch, but account create/sign-in is available for your own profile.
+    - Start with the local profile and continue into core flows from `Browse`, `Messages`, `Sell`, and `Legal workspace`.
 
 ## URLs
 
@@ -46,7 +43,7 @@ Data can operate with remote sync when the local backend is available, and all c
 ## What's New (submission notes)
 
 - Added local-first launch experience and optional backend sync.
-- Added in-app account creation/sign-in flows and seeded demo access for review.
+ - Added in-app account creation/sign-in flows and local starter profile access at launch.
 - Added local encrypted messaging workspace for buyer-seller coordination.
 - Added legal-professional search and contract handoff coordination.
 - Added Play and iOS launch icon pass updates and iOS review-oriented launch path.
@@ -54,7 +51,7 @@ Data can operate with remote sync when the local backend is available, and all c
 ## App Review Test Steps (copy/paste)
 
 1. Open app.
-2. Tap `Continue now`.
+2. Tap `Start now`.
 3. Browse featured/private listings and open a listing detail.
 4. Go to `Messages` and confirm secure conversation controls.
 5. Go to a listing and submit an offer, then open the workspace.
@@ -93,7 +90,7 @@ Data can operate with remote sync when the local backend is available, and all c
 
 ## Apple Guidelines Notes
 
-- Apple review should not be blocked by mandatory sign-in: review can start directly via seeded local mode.
+- Apple review should not be blocked by mandatory sign-in: review can start directly through local starter mode.
 - App includes clear support/privacy/terms links and account deletion in account area.
 - Reporting, blocking, and abusive-message filtering controls are exposed in the messages workflow.
 - Encryption is local and synchronized as part of session messaging data; export and encryption questionnaire should reflect current implementation.
