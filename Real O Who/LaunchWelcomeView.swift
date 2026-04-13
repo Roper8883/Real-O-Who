@@ -6,7 +6,6 @@ struct LaunchWelcomeView: View {
 
     let onComplete: () -> Void
     @State private var authMode: AuthMode? = nil
-    @State private var isSwitchingDemo = false
     @State private var errorMessage: String?
 
     var body: some View {
@@ -72,7 +71,7 @@ struct LaunchWelcomeView: View {
                 .foregroundStyle(Color(red: 0.03, green: 0.23, blue: 0.33))
 
             Text(
-                "Buy and sell privately in Australia without paying a full agent commission. Use the seeded demo to try flows now, or create your own account and keep your data on this device."
+                "Buy and sell privately in Australia without paying a full agent commission. Create your own account, or start with a local starter profile to use all workflows now on this device."
             )
             .font(.subheadline)
             .foregroundStyle(.secondary)
@@ -106,9 +105,9 @@ struct LaunchWelcomeView: View {
                 onComplete()
             }) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Continue now")
+                    Text("Start now")
                         .font(.headline)
-                    Text("Start with the current seeded profile and browse, message, and test all private sale flows.")
+                    Text("Browse listings, message a seller, and review workflow sections immediately.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -132,32 +131,14 @@ struct LaunchWelcomeView: View {
                 .buttonStyle(.bordered)
                 .frame(maxWidth: .infinity)
             }
-
-            HStack(spacing: 12) {
-                Button("Use demo buyer") {
-                    Task { await switchToDemoBuyer() }
-                }
-                .buttonStyle(.bordered)
-                .frame(maxWidth: .infinity)
-
-                Button("Use demo seller") {
-                    Task { await switchToDemoSeller() }
-                }
-                .buttonStyle(.bordered)
-                .frame(maxWidth: .infinity)
-            }
         }
-        .disabled(isSwitchingDemo)
     }
 
     private var dataCallout: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("For Apple review")
+            Text("Getting started")
                 .font(.subheadline.weight(.bold))
-            Text("No login gate blocks this app. Demo accounts and local storage allow all core workflows to run offline.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            Text("Demo email (buyer): noah@realowho.app — seller: mason@realowho.app / Password: HouseDeal123!")
+            Text("This app is fully usable without a backend by using your local starter profile. Sign in or create an account to save your own data.")
                 .font(.footnote)
                 .fontWeight(.medium)
                 .foregroundStyle(.secondary)
@@ -170,31 +151,4 @@ struct LaunchWelcomeView: View {
         )
     }
 
-    @MainActor
-    private func switchToDemoBuyer() async {
-        isSwitchingDemo = true
-        defer { isSwitchingDemo = false }
-
-        do {
-            try await store.signIn(email: "noah@realowho.app", password: "HouseDeal123!")
-            await messaging.activateSession(for: store.currentUserID)
-            onComplete()
-        } catch {
-            errorMessage = "Demo buyer sign-in failed: \(error.localizedDescription)"
-        }
-    }
-
-    @MainActor
-    private func switchToDemoSeller() async {
-        isSwitchingDemo = true
-        defer { isSwitchingDemo = false }
-
-        do {
-            try await store.signIn(email: "mason@realowho.app", password: "HouseDeal123!")
-            await messaging.activateSession(for: store.currentUserID)
-            onComplete()
-        } catch {
-            errorMessage = "Demo seller sign-in failed: \(error.localizedDescription)"
-        }
-    }
 }

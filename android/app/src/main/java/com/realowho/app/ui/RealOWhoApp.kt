@@ -99,6 +99,9 @@ fun RealOWhoApp(
 
     LaunchedEffect(hasCompletedWelcome) {
         if (hasCompletedWelcome) {
+            if (!store.isAuthenticated) {
+                store.ensureGuestSession()
+            }
             welcomeAuthMode = null
         }
     }
@@ -191,7 +194,6 @@ fun RealOWhoApp(
         } else if (!hasCompletedWelcome) {
             if (welcomeAuthMode == null) {
                 WelcomeScreen(
-                    store = store,
                     onContinue = onWelcomeCompleted,
                     onSignIn = { welcomeAuthMode = AuthMode.SIGN_IN },
                     onCreateAccount = { welcomeAuthMode = AuthMode.CREATE_ACCOUNT }

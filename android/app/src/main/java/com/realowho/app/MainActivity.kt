@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
                     onWelcomeCompleted = {
                         hasCompletedWelcome = true
                         launchStateStore.setWelcomeCompleted(true)
+                        store.ensureGuestSession()
                     },
                     pendingSaleWorkspaceLaunch = pendingSaleWorkspaceLaunch,
                     onPendingSaleWorkspaceLaunchHandled = {

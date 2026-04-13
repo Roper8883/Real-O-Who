@@ -149,6 +149,20 @@ class MarketplaceSessionStore(
         persist()
     }
 
+    fun ensureGuestSession() {
+        if (isAuthenticated) {
+            return
+        }
+
+        users = if (users.any { it.id == previewUser.id }) {
+            users
+        } else {
+            listOf(previewUser) + users
+        }
+        sessionUserId = previewUser.id
+        persist()
+    }
+
     private fun load() {
         runCatching {
             if (!storageFile.exists()) {

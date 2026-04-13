@@ -50,26 +50,6 @@ enum class AuthMode(val title: String) {
     CREATE_ACCOUNT("Create Account")
 }
 
-private enum class DemoAccessAccount(
-    val title: String,
-    val subtitle: String,
-    val email: String,
-    val password: String
-) {
-    BUYER(
-        title = "Demo Buyer",
-        subtitle = "Noah Chen",
-        email = "noah@realowho.app",
-        password = "HouseDeal123!"
-    ),
-    SELLER(
-        title = "Demo Seller",
-        subtitle = "Mason Wright",
-        email = "mason@realowho.app",
-        password = "HouseDeal123!"
-    )
-}
-
 private object LegalLinks {
     const val WEBSITE = "https://roper8883.github.io/Real-O-Who/real-o-who/"
     const val PRIVACY = "https://roper8883.github.io/Real-O-Who/real-o-who/privacy-policy/"
@@ -173,14 +153,6 @@ fun AuthenticationScreen(
             }
 
             item {
-                MessageCard(
-                    title = "Quick demo access",
-                    body = "Use the seeded buyer or seller account when the local backend is running. Both use the password HouseDeal123!.",
-                    accent = Color(0xFF15808A)
-                )
-            }
-
-            item {
                 AuthPanel(title = "Legal workspace invite") {
                     Text(
                         text = "Conveyancers and solicitors can open the limited legal workspace with the invite code shared from the sale. Invite codes activate on first use and expire after 30 days.",
@@ -219,47 +191,6 @@ fun AuthenticationScreen(
                         enabled = !isOpeningInvite && legalInviteCode.isNotBlank()
                     ) {
                         Text(if (isOpeningInvite) "Opening..." else "Open Legal Workspace")
-                    }
-                }
-            }
-
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        DemoAccessAccount.entries.forEach { account ->
-                            TextButton(
-                                onClick = {
-                                    modeName = AuthMode.SIGN_IN.name
-                                    errorMessage = null
-                                    signInEmail = account.email
-                                    signInPassword = account.password
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.fillMaxWidth()) {
-                                    Text(
-                                        text = account.title,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    Text(
-                                        text = account.subtitle,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        text = account.email,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
                     }
                 }
             }

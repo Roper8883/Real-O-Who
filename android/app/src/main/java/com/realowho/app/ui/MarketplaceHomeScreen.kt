@@ -127,28 +127,6 @@ private object MarketplaceLinks {
     const val SUPPORT = "https://roper8883.github.io/Real-O-Who/real-o-who/support/"
 }
 
-private data class DemoAccountShortcut(
-    val label: String,
-    val accountName: String,
-    val email: String,
-    val password: String
-)
-
-private val demoAccountShortcuts = listOf(
-    DemoAccountShortcut(
-        label = "Use Demo Buyer",
-        accountName = "Noah Chen",
-        email = "noah@realowho.app",
-        password = "HouseDeal123!"
-    ),
-    DemoAccountShortcut(
-        label = "Use Demo Seller",
-        accountName = "Mason Wright",
-        email = "mason@realowho.app",
-        password = "HouseDeal123!"
-    )
-)
-
 private data class MarketplaceSearchFilters(
     val query: String = "",
     val suburb: String = "",
@@ -1023,28 +1001,7 @@ fun MarketplaceHomeScreen(
                     storageModeSummary = store.storageModeSummary,
                     backendEndpoint = store.backendEndpointSummary,
                     onOpenSupport = { openLink(context, MarketplaceLinks.SUPPORT) },
-                    onSignOut = { store.signOut() },
-                    onSwitchDemoAccount = { demoAccount ->
-                        coroutineScope.launch {
-                            runCatching {
-                                store.signIn(demoAccount.email, demoAccount.password)
-                                marketplaceStore.refreshForUser(store.currentUser.id)
-                                saleStore.refreshFromBackend()
-                                conversationStore.activateSession(
-                                    user = store.currentUser,
-                                    counterpart = saleStore.counterpartFor(store.currentUser),
-                                    listing = saleStore.listing
-                                )
-                            }.onSuccess {
-                                filters = filters.copy(
-                                    suburb = store.currentUser.suburb.substringBefore(",").trim()
-                                )
-                                noticeMessage = "Signed in as ${demoAccount.accountName}."
-                            }.onFailure { error ->
-                                noticeMessage = error.message ?: "Could not switch demo accounts right now."
-                            }
-                        }
-                    }
+                    onSignOut = { store.signOut() }
                 )
             }
         }
@@ -2340,8 +2297,7 @@ private fun AccountCard(
     storageModeSummary: String,
     backendEndpoint: String,
     onOpenSupport: () -> Unit,
-    onSignOut: () -> Unit,
-    onSwitchDemoAccount: (DemoAccountShortcut) -> Unit
+    onSignOut: () -> Unit
 ) {
     SummaryCard(
         title = "Signed-in account",
@@ -2356,21 +2312,6 @@ private fun AccountCard(
             text = backendEndpoint,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        demoAccountShortcuts.forEach { account ->
-            OutlinedButton(
-                onClick = { onSwitchDemoAccount(account) },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(text = account.label, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        text = account.accountName,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
         Button(
             onClick = onOpenSupport,
             modifier = Modifier.fillMaxWidth()
