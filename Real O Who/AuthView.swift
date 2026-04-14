@@ -124,15 +124,8 @@ struct AuthenticationView: View {
         }
     }
 
-    private var authBackground: LinearGradient {
-        LinearGradient(
-            colors: [
-                Color(red: 0.94, green: 0.98, blue: 1.0),
-                Color(red: 0.98, green: 0.99, blue: 1.0)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+    private var authBackground: Color {
+        AppTheme.pageBackground
     }
 
     private var heroCard: some View {
@@ -217,7 +210,7 @@ struct AuthenticationView: View {
                     .padding(16)
                     .background(
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(Color.white)
+                            .fill(AppTheme.inputBackground)
                     )
             }
 
@@ -271,7 +264,7 @@ struct AuthenticationView: View {
                     .padding(16)
                     .background(
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(Color.white)
+                            .fill(AppTheme.inputBackground)
                     )
 
                 authField(
@@ -374,7 +367,7 @@ struct AuthenticationView: View {
 
     private var authPanel: some View {
         RoundedRectangle(cornerRadius: 24, style: .continuous)
-            .fill(Color(red: 0.98, green: 0.99, blue: 1.0))
+            .fill(AppTheme.cardBackground)
     }
 
     private func errorCard(message: String) -> some View {
@@ -407,7 +400,7 @@ struct AuthenticationView: View {
                 .padding(16)
                 .background(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color.white)
+                        .fill(AppTheme.inputBackground)
                 )
         }
     }
@@ -419,7 +412,7 @@ struct AuthenticationView: View {
             .padding(.vertical, 7)
             .background(
                 Capsule()
-                    .fill(Color.white.opacity(0.16))
+                    .fill(AppTheme.pillBackground.opacity(0.85))
             )
     }
 

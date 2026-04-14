@@ -27,6 +27,7 @@ final class MarketplaceStore: ObservableObject {
     private let listingSync: any MarketplaceListingSyncing
     private let userStateSync: any MarketplaceUserStateSyncing
     private let legalProfessionalSearch: any MarketplaceLegalProfessionalSearching
+    private let postSaleConciergeSearch: any MarketplacePostSaleConciergeSearching
     private let saleSync: any MarketplaceSaleSyncing
     private let storageModeSummaryValue: String
     private let backendEndpointSummaryValue: String
@@ -40,6 +41,7 @@ final class MarketplaceStore: ObservableObject {
         listingSync: (any MarketplaceListingSyncing)? = nil,
         userStateSync: (any MarketplaceUserStateSyncing)? = nil,
         legalProfessionalSearch: (any MarketplaceLegalProfessionalSearching)? = nil,
+        postSaleConciergeSearch: (any MarketplacePostSaleConciergeSearching)? = nil,
         saleSync: (any MarketplaceSaleSyncing)? = nil,
         storageModeSummary: String = "Local only",
         backendEndpointSummary: String = "No backend URL",
@@ -53,6 +55,7 @@ final class MarketplaceStore: ObservableObject {
         self.listingSync = listingSync ?? DisabledListingSync()
         self.userStateSync = userStateSync ?? DisabledUserStateSync()
         self.legalProfessionalSearch = legalProfessionalSearch ?? LocalLegalProfessionalSearch()
+        self.postSaleConciergeSearch = postSaleConciergeSearch ?? LocalPostSaleConciergeSearch()
         self.saleSync = saleSync ?? DisabledSaleSync()
         self.storageModeSummaryValue = storageModeSummary
         self.backendEndpointSummaryValue = backendEndpointSummary
@@ -171,6 +174,22 @@ final class MarketplaceStore: ObservableObject {
             draftListings: draftCount,
             totalOffers: offerCount,
             averageDemandScore: averageDemand
+        )
+    }
+
+    var currentUserConciergeReminderDashboard: ConciergeReminderDashboard {
+        let relevantOffers = offers.filter { $0.buyerID == currentUserID || $0.sellerID == currentUserID }
+        let bookings = relevantOffers
+            .flatMap(\.conciergeBookings)
+            .filter { !$0.isCancelled && !$0.isCompleted && !$0.isProviderConfirmed }
+
+        return ConciergeReminderDashboard(
+            intensity: currentUser.conciergeReminderIntensity,
+            activeBookingCount: bookings.count,
+            overdueCount: bookings.filter(\.needsResponseFollowUp).count,
+            dueSoonCount: bookings.filter(\.isResponseDueSoon).count,
+            snoozedCount: bookings.filter(\.isReminderSnoozed).count,
+            openIssueCount: bookings.filter(\.hasOpenIssue).count
         )
     }
 
@@ -319,6 +338,22 @@ final class MarketplaceStore: ObservableObject {
         persist()
     }
 
+    func updateConciergeReminderIntensity(
+        userID: UUID,
+        intensity: ConciergeReminderIntensity
+    ) {
+        guard let userIndex = users.firstIndex(where: { $0.id == userID }) else {
+            return
+        }
+
+        guard users[userIndex].conciergeReminderIntensity != intensity else {
+            return
+        }
+
+        users[userIndex].conciergeReminderIntensity = intensity
+        persist()
+    }
+
     func signIn(email: String, password: String) async throws {
         let session = try await authService.signIn(
             email: email,
@@ -452,8 +487,115 @@ final class MarketplaceStore: ObservableObject {
         syncMarketplaceStateInBackground()
     }
 
+    @discardableResult
+    func completeVerificationCheck(
+        userID: UUID,
+        kind: VerificationCheckKind
+    ) -> VerificationCompletionOutcome? {
+        guard let completedCheck = markVerificationCheckVerified(
+            userID: userID,
+            kind: kind,
+            detail: verificationCompletionDetail(for: kind, userID: userID)
+        ),
+        let updatedUser = user(id: userID) else {
+            return nil
+        }
+
+        let unlockedContractPackets = unlockContractPacketsForEligibleOffers(triggeredBy: userID)
+        persist()
+
+        for unlocked in unlockedContractPackets {
+            syncOfferInBackground(unlocked.offer)
+        }
+
+        return VerificationCompletionOutcome(
+            user: updatedUser,
+            completedCheck: completedCheck,
+            unlockedContractPackets: unlockedContractPackets,
+            linkedDealRoomCount: 0,
+            noticeMessage: verificationCompletionNotice(
+                for: kind,
+                user: updatedUser,
+                linkedDealRoomCount: 0,
+                unlockedCount: unlockedContractPackets.count
+            )
+        )
+    }
+
+    @discardableResult
+    func uploadVerificationDocument(
+        userID: UUID,
+        kind: VerificationCheckKind,
+        fileName: String,
+        data: Data,
+        mimeType: String
+    ) -> VerificationCompletionOutcome? {
+        guard kind.requiresDocumentUpload else {
+            return nil
+        }
+
+        let trimmedFileName = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedFileName = trimmedFileName.isEmpty
+            ? defaultVerificationEvidenceFileName(for: kind, userID: userID)
+            : trimmedFileName
+        let uploadedAt = Date()
+
+        guard let completedCheck = markVerificationCheckVerified(
+            userID: userID,
+            kind: kind,
+            detail: verificationEvidenceDetail(
+                for: kind,
+                userID: userID,
+                fileName: normalizedFileName
+            ),
+            verifiedAt: uploadedAt,
+            evidenceFileName: normalizedFileName,
+            evidenceMimeType: mimeType,
+            evidenceAttachmentBase64: data.base64EncodedString(),
+            evidenceUploadedAt: uploadedAt
+        ),
+        let updatedUser = user(id: userID) else {
+            return nil
+        }
+
+        let linkedOfferIDs = attachVerificationEvidenceToRelevantOffers(
+            user: updatedUser,
+            kind: kind
+        )
+        let unlockedContractPackets = unlockContractPacketsForEligibleOffers(triggeredBy: userID)
+        persist()
+
+        var syncedOfferIDs = Set(linkedOfferIDs)
+        unlockedContractPackets.forEach { syncedOfferIDs.insert($0.offer.id) }
+
+        for offerID in syncedOfferIDs {
+            guard let updatedOffer = offer(id: offerID) else { continue }
+            syncOfferInBackground(updatedOffer)
+        }
+
+        return VerificationCompletionOutcome(
+            user: updatedUser,
+            completedCheck: completedCheck,
+            unlockedContractPackets: unlockedContractPackets,
+            linkedDealRoomCount: linkedOfferIDs.count,
+            noticeMessage: verificationCompletionNotice(
+                for: kind,
+                user: updatedUser,
+                linkedDealRoomCount: linkedOfferIDs.count,
+                unlockedCount: unlockedContractPackets.count
+            )
+        )
+    }
+
     func searchLegalProfessionals(for listing: PropertyListing) async throws -> [LegalProfessional] {
         try await legalProfessionalSearch.searchProfessionals(near: listing)
+    }
+
+    func searchPostSaleConciergeProviders(
+        for listing: PropertyListing,
+        serviceKind: PostSaleConciergeServiceKind
+    ) async throws -> [PostSaleConciergeProvider] {
+        try await postSaleConciergeSearch.searchProviders(near: listing, serviceKind: serviceKind)
     }
 
     func refreshListings() async {
@@ -845,18 +987,22 @@ final class MarketplaceStore: ObservableObject {
         let actingUserName = user(id: userID)?.name ?? "Participant"
         let previousContractPacket = offer.contractPacket
 
+        _ = markVerificationCheckVerified(
+            userID: userID,
+            kind: .legal,
+            detail: "\(professional.name) is now selected to handle the \(professional.primarySpecialty.lowercased()) side of the sale."
+        )
+
         if let buyerSelection = offer.buyerLegalSelection,
            let sellerSelection = offer.sellerLegalSelection,
            (selectionChanged || offer.contractPacket == nil) {
-            contractPacket = makeContractPacket(
-                offer: offer,
+            contractPacket = prepareContractPacketIfEligible(
+                for: &offer,
                 buyerRepresentative: buyerSelection.professional,
-                sellerRepresentative: sellerSelection.professional
+                sellerRepresentative: sellerSelection.professional,
+                triggeredBy: userID,
+                forceRefresh: previousContractPacket != nil
             )
-            offer.contractPacket = contractPacket
-            if let contractPacket {
-                registerInitialWorkspaceMaterials(for: &offer, packet: contractPacket, triggeredBy: userID)
-            }
         }
 
         if selectionChanged {
@@ -923,6 +1069,7 @@ final class MarketplaceStore: ObservableObject {
             conditions: trimmedConditions,
             createdAt: now,
             status: .underOffer,
+            sellerRelationshipStatus: existingOffer?.sellerRelationshipStatus ?? .watching,
             buyerLegalSelection: existingOffer?.buyerLegalSelection,
             sellerLegalSelection: existingOffer?.sellerLegalSelection,
             contractPacket: existingOffer?.contractPacket,
@@ -940,14 +1087,14 @@ final class MarketplaceStore: ObservableObject {
         ]
         if let buyerRepresentative = record.buyerLegalSelection?.professional,
            let sellerRepresentative = record.sellerLegalSelection?.professional {
-            refreshedPacket = makeContractPacket(
-                offer: record,
+            refreshedPacket = prepareContractPacketIfEligible(
+                for: &record,
                 buyerRepresentative: buyerRepresentative,
-                sellerRepresentative: sellerRepresentative
+                sellerRepresentative: sellerRepresentative,
+                triggeredBy: buyerID,
+                forceRefresh: existingOffer?.contractPacket != nil
             )
-            record.contractPacket = refreshedPacket
             if let refreshedPacket {
-                registerInitialWorkspaceMaterials(for: &record, packet: refreshedPacket, triggeredBy: buyerID)
                 newUpdates.append(
                     makeSaleUpdate(
                         title: existingOffer?.contractPacket == nil ? "Contract packet sent" : "Contract packet refreshed",
@@ -1002,7 +1149,17 @@ final class MarketplaceStore: ObservableObject {
         guard offer.contractPacket?.isFullySigned != true else {
             return nil
         }
+        if action == .accept,
+           offers.contains(where: {
+               $0.listingID == offer.listingID &&
+               $0.id != offer.id &&
+               $0.status == .accepted &&
+               $0.contractPacket?.isFullySigned != true
+           }) {
+            return nil
+        }
         let previousContractPacket = offer.contractPacket
+        var downgradedPreferredOfferIDs: [UUID] = []
 
         offer.amount = amount
         offer.conditions = trimmedConditions
@@ -1017,20 +1174,32 @@ final class MarketplaceStore: ObservableObject {
                 return .countered
             }
         }()
+        if action == .accept {
+            offer.sellerRelationshipStatus = .preferred
+
+            for index in offers.indices {
+                guard offers[index].listingID == offer.listingID,
+                      offers[index].id != offer.id,
+                      offers[index].sellerRelationshipStatus == .preferred else {
+                    continue
+                }
+
+                offers[index].sellerRelationshipStatus = .shortlisted
+                downgradedPreferredOfferIDs.append(offers[index].id)
+            }
+        }
 
         var refreshedPacket: ContractPacket?
         var newUpdates: [SaleUpdateMessage] = []
         if let buyerRepresentative = offer.buyerLegalSelection?.professional,
            let sellerRepresentative = offer.sellerLegalSelection?.professional {
-            refreshedPacket = makeContractPacket(
-                offer: offer,
+            refreshedPacket = prepareContractPacketIfEligible(
+                for: &offer,
                 buyerRepresentative: buyerRepresentative,
-                sellerRepresentative: sellerRepresentative
+                sellerRepresentative: sellerRepresentative,
+                triggeredBy: userID,
+                forceRefresh: previousContractPacket != nil
             )
-            offer.contractPacket = refreshedPacket
-            if let refreshedPacket {
-                registerInitialWorkspaceMaterials(for: &offer, packet: refreshedPacket, triggeredBy: userID)
-            }
         } else {
             offer.contractPacket = nil
         }
@@ -1074,12 +1243,81 @@ final class MarketplaceStore: ObservableObject {
         offers[offerIndex] = offer
 
         persist()
+        downgradedPreferredOfferIDs.forEach { downgradedID in
+            if let downgradedOffer = offers.first(where: { $0.id == downgradedID }) {
+                syncOfferInBackground(downgradedOffer)
+            }
+        }
         syncOfferInBackground(offer)
 
         return SellerOfferResponseOutcome(
             offer: offer,
             contractPacket: refreshedPacket,
             threadMessage: threadMessage,
+            noticeMessage: noticeMessage
+        )
+    }
+
+    @discardableResult
+    func updateSellerRelationshipStatus(
+        offerID: UUID,
+        userID: UUID,
+        status: SellerBuyerRelationshipStatus
+    ) -> SellerOfferDispositionOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        guard offers[offerIndex].sellerID == userID else {
+            return nil
+        }
+
+        guard offers[offerIndex].contractPacket?.isFullySigned != true else {
+            return nil
+        }
+
+        let listingID = offers[offerIndex].listingID
+        var updatedOffer = offers[offerIndex]
+        var downgradedOfferIDs: [UUID] = []
+
+        if status == .preferred {
+            for index in offers.indices {
+                guard offers[index].listingID == listingID,
+                      offers[index].id != offerID,
+                      offers[index].sellerID == userID,
+                      offers[index].sellerRelationshipStatus == .preferred else {
+                    continue
+                }
+
+                offers[index].sellerRelationshipStatus = .shortlisted
+                downgradedOfferIDs.append(offers[index].id)
+                syncOfferInBackground(offers[index])
+            }
+        }
+
+        updatedOffer.sellerRelationshipStatus = status
+        offers[offerIndex] = updatedOffer
+
+        persist()
+        syncOfferInBackground(updatedOffer)
+
+        let noticeMessage: String
+        switch status {
+        case .watching:
+            noticeMessage = "Offer moved back to watching so you can keep the buyer warm without prioritising them."
+        case .shortlisted:
+            noticeMessage = "Offer shortlisted. You can keep comparing it against other buyers on this listing."
+        case .preferred:
+            if downgradedOfferIDs.isEmpty {
+                noticeMessage = "Preferred buyer set for this listing."
+            } else {
+                noticeMessage = "Preferred buyer updated. The previous preferred offer was kept warm as shortlisted."
+            }
+        }
+
+        return SellerOfferDispositionOutcome(
+            offer: updatedOffer,
+            downgradedOfferIDs: downgradedOfferIDs,
             noticeMessage: noticeMessage
         )
     }
@@ -1165,6 +1403,995 @@ final class MarketplaceStore: ObservableObject {
         )
     }
 
+    @discardableResult
+    func completeSettlement(
+        offerID: UUID,
+        userID: UUID
+    ) -> SettlementCompletionOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              let packet = offer.contractPacket,
+              packet.isFullySigned == true,
+              offer.settlementCompletedAt == nil,
+              offer.documents.contains(where: { $0.kind == .settlementStatementPDF }) else {
+            return nil
+        }
+
+        let now = Date()
+        offer.settlementCompletedAt = now
+        registerSettlementArchiveMaterials(
+            for: &offer,
+            packet: packet,
+            triggeredBy: userID,
+            createdAt: now
+        )
+
+        let actorName = user(id: userID)?.name ?? "A participant"
+        let body = "\(actorName) confirmed settlement completion. Funds, keys, and final handover are now closed out for the private sale."
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: "Settlement completed",
+                body: body,
+                createdAt: now,
+                checklistItemID: "settlement-complete"
+            ),
+            at: 0
+        )
+        offers[offerIndex] = offer
+
+        if let listingIndex = listings.firstIndex(where: { $0.id == offer.listingID }) {
+            listings[listingIndex].status = .sold
+            listings[listingIndex].updatedAt = now
+        }
+
+        persist()
+        syncOfferInBackground(offer)
+
+        return SettlementCompletionOutcome(
+            offer: offer,
+            threadMessage: body,
+            noticeMessage: "Settlement has been marked complete and the active deal is now fully closed."
+        )
+    }
+
+    @discardableResult
+    func completePostSaleServiceTask(
+        offerID: UUID,
+        userID: UUID,
+        task: PostSaleServiceTaskKind
+    ) -> PostSaleServiceOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              offer.completedAt(for: task) == nil else {
+            return nil
+        }
+
+        let now = Date()
+        switch task {
+        case .utilitiesTransfer:
+            offer.utilitiesTransferCompletedAt = now
+        case .addressUpdate:
+            offer.addressUpdateCompletedAt = now
+        }
+
+        let actorName = user(id: userID)?.name ?? "A participant"
+        let body = "\(actorName) completed the post-sale follow-through step: \(task.completionSummary)"
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: task.completionTitle,
+                body: body,
+                createdAt: now
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleServiceOutcome(
+            offer: offer,
+            threadMessage: body,
+            noticeMessage: "\(task.title) marked complete for this settled deal."
+        )
+    }
+
+    @discardableResult
+    func bookPostSaleConciergeService(
+        offerID: UUID,
+        userID: UUID,
+        serviceKind: PostSaleConciergeServiceKind,
+        provider: PostSaleConciergeProvider,
+        scheduledFor: Date,
+        notes: String,
+        estimatedCost: Int?
+    ) -> PostSaleConciergeBookingOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              provider.serviceKind == serviceKind else {
+            return nil
+        }
+
+        let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let now = Date()
+        let actorName = user(id: userID)?.name ?? "A participant"
+        let existingBooking = offer.conciergeBooking(for: serviceKind)
+        let didReplaceProvider = existingBooking.map { $0.provider.id != provider.id } ?? false
+        let preservesProviderHistory = existingBooking?.isCancelled != true &&
+            existingBooking?.provider.id == provider.id
+        let preservesFinancialState = preservesProviderHistory
+        let preservesQuoteApproval = preservesProviderHistory &&
+            existingBooking?.estimatedCost == estimatedCost
+        let preservesProviderConfirmation = preservesProviderHistory &&
+            existingBooking?.scheduledFor == scheduledFor
+        let preservesProviderReminderState = preservesProviderHistory &&
+            existingBooking?.scheduledFor == scheduledFor
+        let didReschedule = preservesProviderHistory &&
+            existingBooking?.scheduledFor != scheduledFor
+        let providerAuditHistory: [PostSaleConciergeProviderAuditEntry]
+        if didReplaceProvider, let existingBooking {
+            providerAuditHistory = [
+                makePostSaleConciergeProviderAuditEntry(
+                    from: existingBooking,
+                    replacedAt: now,
+                    replacedByUserID: userID,
+                    replacedByName: actorName
+                )
+            ] + (existingBooking.providerAuditHistory ?? [])
+        } else {
+            providerAuditHistory = existingBooking?.providerAuditHistory ?? []
+        }
+        let booking = PostSaleConciergeBooking(
+            id: existingBooking?.id ?? UUID(),
+            serviceKind: serviceKind,
+            provider: provider,
+            scheduledFor: scheduledFor,
+            bookedAt: now,
+            bookedByUserID: userID,
+            bookedByName: actorName,
+            notes: trimmedNotes,
+            previousScheduledFor: didReschedule ? existingBooking?.scheduledFor : (preservesProviderHistory ? existingBooking?.previousScheduledFor : nil),
+            lastRescheduledAt: didReschedule ? now : (preservesProviderHistory ? existingBooking?.lastRescheduledAt : nil),
+            lastRescheduledByUserID: didReschedule ? userID : (preservesProviderHistory ? existingBooking?.lastRescheduledByUserID : nil),
+            lastRescheduledByName: didReschedule ? actorName : (preservesProviderHistory ? existingBooking?.lastRescheduledByName : nil),
+            rescheduleCount: didReschedule ? (existingBooking?.rescheduleCountValue ?? 0) + 1 : (preservesProviderHistory ? existingBooking?.rescheduleCount : nil),
+            estimatedCost: estimatedCost,
+            quoteApprovedAt: preservesQuoteApproval ? existingBooking?.quoteApprovedAt : nil,
+            quoteApprovedByUserID: preservesQuoteApproval ? existingBooking?.quoteApprovedByUserID : nil,
+            quoteApprovedByName: preservesQuoteApproval ? existingBooking?.quoteApprovedByName : nil,
+            providerConfirmedAt: preservesProviderConfirmation ? existingBooking?.providerConfirmedAt : nil,
+            providerConfirmedByUserID: preservesProviderConfirmation ? existingBooking?.providerConfirmedByUserID : nil,
+            providerConfirmedByName: preservesProviderConfirmation ? existingBooking?.providerConfirmedByName : nil,
+            providerConfirmationNote: preservesProviderConfirmation ? existingBooking?.providerConfirmationNote : nil,
+            reminderSnoozedUntil: preservesProviderReminderState ? existingBooking?.reminderSnoozedUntil : nil,
+            lastFollowUpAt: preservesProviderReminderState ? existingBooking?.lastFollowUpAt : nil,
+            lastFollowUpByUserID: preservesProviderReminderState ? existingBooking?.lastFollowUpByUserID : nil,
+            lastFollowUpByName: preservesProviderReminderState ? existingBooking?.lastFollowUpByName : nil,
+            followUpCount: preservesProviderReminderState ? existingBooking?.followUpCount : nil,
+            lastFollowUpNote: preservesProviderReminderState ? existingBooking?.lastFollowUpNote : nil,
+            invoiceAmount: preservesFinancialState ? existingBooking?.invoiceAmount : nil,
+            invoiceFileName: preservesFinancialState ? existingBooking?.invoiceFileName : nil,
+            invoiceMimeType: preservesFinancialState ? existingBooking?.invoiceMimeType : nil,
+            invoiceAttachmentBase64: preservesFinancialState ? existingBooking?.invoiceAttachmentBase64 : nil,
+            invoiceUploadedAt: preservesFinancialState ? existingBooking?.invoiceUploadedAt : nil,
+            paidAmount: preservesFinancialState ? existingBooking?.paidAmount : nil,
+            paymentConfirmedAt: preservesFinancialState ? existingBooking?.paymentConfirmedAt : nil,
+            paymentConfirmedByUserID: preservesFinancialState ? existingBooking?.paymentConfirmedByUserID : nil,
+            paymentConfirmedByName: preservesFinancialState ? existingBooking?.paymentConfirmedByName : nil,
+            paymentProofFileName: preservesFinancialState ? existingBooking?.paymentProofFileName : nil,
+            paymentProofMimeType: preservesFinancialState ? existingBooking?.paymentProofMimeType : nil,
+            paymentProofAttachmentBase64: preservesFinancialState ? existingBooking?.paymentProofAttachmentBase64 : nil,
+            paymentProofUploadedAt: preservesFinancialState ? existingBooking?.paymentProofUploadedAt : nil,
+            cancelledAt: nil,
+            cancelledByUserID: nil,
+            cancelledByName: nil,
+            cancellationReason: nil,
+            refundAmount: preservesFinancialState ? existingBooking?.refundAmount : nil,
+            refundProcessedAt: preservesFinancialState ? existingBooking?.refundProcessedAt : nil,
+            refundProcessedByUserID: preservesFinancialState ? existingBooking?.refundProcessedByUserID : nil,
+            refundProcessedByName: preservesFinancialState ? existingBooking?.refundProcessedByName : nil,
+            refundNote: preservesFinancialState ? existingBooking?.refundNote : nil,
+            issueKind: preservesProviderHistory ? existingBooking?.issueKind : nil,
+            issueLoggedAt: preservesProviderHistory ? existingBooking?.issueLoggedAt : nil,
+            issueLoggedByUserID: preservesProviderHistory ? existingBooking?.issueLoggedByUserID : nil,
+            issueLoggedByName: preservesProviderHistory ? existingBooking?.issueLoggedByName : nil,
+            issueNote: preservesProviderHistory ? existingBooking?.issueNote : nil,
+            issueResolvedAt: preservesProviderHistory ? existingBooking?.issueResolvedAt : nil,
+            issueResolvedByUserID: preservesProviderHistory ? existingBooking?.issueResolvedByUserID : nil,
+            issueResolvedByName: preservesProviderHistory ? existingBooking?.issueResolvedByName : nil,
+            issueResolutionNote: preservesProviderHistory ? existingBooking?.issueResolutionNote : nil,
+            providerAuditHistory: providerAuditHistory,
+            status: .scheduled,
+            completedAt: nil
+        )
+
+        offer.conciergeBookings.removeAll { $0.serviceKind == serviceKind }
+        offer.conciergeBookings.insert(booking, at: 0)
+
+        let scheduleString = "\(scheduledFor.formatted(date: .abbreviated, time: .shortened))"
+        let title: String
+        let body: String
+        let quoteSuffix = estimatedCost.map {
+            " Quote estimate: \(Currency.aud.string(from: NSNumber(value: $0)) ?? "$\($0)")."
+        } ?? ""
+        if didReplaceProvider,
+           let previousProviderName = existingBooking?.provider.name {
+            title = "\(serviceKind.title) provider replaced"
+            let archiveSuffix = providerAuditHistory.isEmpty ? "" : " Previous provider history stays in the archive."
+            if trimmedNotes.isEmpty {
+                body = "\(actorName) changed \(serviceKind.title.lowercased()) from \(previousProviderName) to \(provider.name) for \(scheduleString).\(quoteSuffix)\(archiveSuffix)"
+            } else {
+                body = "\(actorName) changed \(serviceKind.title.lowercased()) from \(previousProviderName) to \(provider.name) for \(scheduleString).\(quoteSuffix)\(archiveSuffix) Notes: \(trimmedNotes)"
+            }
+        } else if didReschedule,
+           let previousSchedule = existingBooking?.scheduledFor {
+            title = "\(serviceKind.title) rescheduled"
+            let previousScheduleString = previousSchedule.formatted(date: .abbreviated, time: .shortened)
+            if trimmedNotes.isEmpty {
+                body = "\(actorName) rescheduled \(serviceKind.title.lowercased()) with \(provider.name) from \(previousScheduleString) to \(scheduleString).\(quoteSuffix)"
+            } else {
+                body = "\(actorName) rescheduled \(serviceKind.title.lowercased()) with \(provider.name) from \(previousScheduleString) to \(scheduleString).\(quoteSuffix) Notes: \(trimmedNotes)"
+            }
+        } else if existingBooking == nil {
+            title = serviceKind.bookingTitle
+            body = "\(actorName) booked \(provider.name) for \(serviceKind.title.lowercased()) on \(scheduleString).\(quoteSuffix)"
+        } else {
+            title = "\(serviceKind.title) updated"
+            if trimmedNotes.isEmpty {
+                body = "\(actorName) updated \(serviceKind.title.lowercased()) with \(provider.name) for \(scheduleString).\(quoteSuffix)"
+            } else {
+                body = "\(actorName) updated \(serviceKind.title.lowercased()) with \(provider.name) for \(scheduleString).\(quoteSuffix) Notes: \(trimmedNotes)"
+            }
+        }
+
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: title,
+                body: body,
+                createdAt: now
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleConciergeBookingOutcome(
+            offer: offer,
+            booking: booking,
+            threadMessage: body,
+            noticeMessage: didReplaceProvider
+                ? "\(serviceKind.title) moved to \(provider.name). Previous provider history is preserved in the archive."
+                : "\(serviceKind.title) is booked with \(provider.name)."
+        )
+    }
+
+    @discardableResult
+    func confirmPostSaleConciergeProvider(
+        offerID: UUID,
+        userID: UUID,
+        serviceKind: PostSaleConciergeServiceKind,
+        note: String
+    ) -> PostSaleConciergeBookingOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              let bookingIndex = offer.conciergeBookings.firstIndex(where: { $0.serviceKind == serviceKind }) else {
+            return nil
+        }
+
+        var booking = offer.conciergeBookings[bookingIndex]
+        guard booking.isCancelled == false,
+              booking.isCompleted == false,
+              booking.isProviderConfirmed == false else {
+            return nil
+        }
+
+        let now = Date()
+        let actorName = user(id: userID)?.name ?? "A participant"
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        booking.providerConfirmedAt = now
+        booking.providerConfirmedByUserID = userID
+        booking.providerConfirmedByName = actorName
+        booking.providerConfirmationNote = trimmedNote.isEmpty ? nil : trimmedNote
+        booking.reminderSnoozedUntil = nil
+        offer.conciergeBookings[bookingIndex] = booking
+
+        let noteSuffix = trimmedNote.isEmpty ? "" : " Note: \(trimmedNote)"
+        let body = "\(actorName) marked \(booking.provider.name) as confirmed for \(serviceKind.title.lowercased()).\(noteSuffix)"
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: "\(serviceKind.title) provider confirmed",
+                body: body,
+                createdAt: now
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleConciergeBookingOutcome(
+            offer: offer,
+            booking: booking,
+            threadMessage: body,
+            noticeMessage: "\(serviceKind.title) provider marked confirmed."
+        )
+    }
+
+    @discardableResult
+    func logPostSaleConciergeFollowUp(
+        offerID: UUID,
+        userID: UUID,
+        serviceKind: PostSaleConciergeServiceKind,
+        note: String
+    ) -> PostSaleConciergeBookingOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              let bookingIndex = offer.conciergeBookings.firstIndex(where: { $0.serviceKind == serviceKind }) else {
+            return nil
+        }
+
+        var booking = offer.conciergeBookings[bookingIndex]
+        guard booking.isCancelled == false,
+              booking.isCompleted == false,
+              booking.isProviderConfirmed == false else {
+            return nil
+        }
+
+        let now = Date()
+        let actorName = user(id: userID)?.name ?? "A participant"
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        booking.lastFollowUpAt = now
+        booking.lastFollowUpByUserID = userID
+        booking.lastFollowUpByName = actorName
+        booking.followUpCount = booking.followUpCountValue + 1
+        booking.lastFollowUpNote = trimmedNote.isEmpty ? nil : trimmedNote
+        booking.reminderSnoozedUntil = nil
+        offer.conciergeBookings[bookingIndex] = booking
+
+        let noteSuffix = trimmedNote.isEmpty ? "" : " Note: \(trimmedNote)"
+        let body = "\(actorName) logged provider follow-up with \(booking.provider.name) for \(serviceKind.title.lowercased()).\(noteSuffix)"
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: "\(serviceKind.title) follow-up logged",
+                body: body,
+                createdAt: now,
+                kind: .reminder,
+                checklistItemID: "concierge-\(serviceKind.rawValue)"
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleConciergeBookingOutcome(
+            offer: offer,
+            booking: booking,
+            threadMessage: body,
+            noticeMessage: "\(serviceKind.title) follow-up logged."
+        )
+    }
+
+    @discardableResult
+    func snoozePostSaleConciergeFollowUp(
+        offerID: UUID,
+        userID: UUID,
+        serviceKind: PostSaleConciergeServiceKind,
+        until: Date
+    ) -> PostSaleConciergeBookingOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              let bookingIndex = offer.conciergeBookings.firstIndex(where: { $0.serviceKind == serviceKind }) else {
+            return nil
+        }
+
+        var booking = offer.conciergeBookings[bookingIndex]
+        guard booking.isCancelled == false,
+              booking.isCompleted == false,
+              booking.isProviderConfirmed == false else {
+            return nil
+        }
+
+        let now = Date()
+        let actorName = user(id: userID)?.name ?? "A participant"
+        let snoozedUntil = max(until, now.addingTimeInterval(60 * 15))
+        booking.reminderSnoozedUntil = snoozedUntil
+        offer.conciergeBookings[bookingIndex] = booking
+
+        let body = "\(actorName) snoozed provider follow-up for \(serviceKind.title.lowercased()) with \(booking.provider.name) until \(snoozedUntil.formatted(date: .abbreviated, time: .shortened))."
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: "\(serviceKind.title) reminder snoozed",
+                body: body,
+                createdAt: now,
+                kind: .reminder,
+                checklistItemID: "concierge-\(serviceKind.rawValue)"
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleConciergeBookingOutcome(
+            offer: offer,
+            booking: booking,
+            threadMessage: body,
+            noticeMessage: "\(serviceKind.title) reminder snoozed until \(snoozedUntil.formatted(date: .abbreviated, time: .shortened))."
+        )
+    }
+
+    @discardableResult
+    func logPostSaleConciergeIssue(
+        offerID: UUID,
+        userID: UUID,
+        serviceKind: PostSaleConciergeServiceKind,
+        issueKind: PostSaleConciergeIssueKind,
+        note: String
+    ) -> PostSaleConciergeBookingOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              let bookingIndex = offer.conciergeBookings.firstIndex(where: { $0.serviceKind == serviceKind }) else {
+            return nil
+        }
+
+        var booking = offer.conciergeBookings[bookingIndex]
+        guard booking.hasOpenIssue == false else {
+            return nil
+        }
+
+        let now = Date()
+        let actorName = user(id: userID)?.name ?? "A participant"
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        booking.issueKind = issueKind
+        booking.issueLoggedAt = now
+        booking.issueLoggedByUserID = userID
+        booking.issueLoggedByName = actorName
+        booking.issueNote = trimmedNote.isEmpty ? nil : trimmedNote
+        booking.issueResolvedAt = nil
+        booking.issueResolvedByUserID = nil
+        booking.issueResolvedByName = nil
+        booking.issueResolutionNote = nil
+        offer.conciergeBookings[bookingIndex] = booking
+
+        let noteSuffix = trimmedNote.isEmpty ? "" : " Note: \(trimmedNote)"
+        let body = "\(actorName) logged a \(issueKind.title.lowercased()) issue for \(serviceKind.title.lowercased()) with \(booking.provider.name).\(noteSuffix)"
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: "\(serviceKind.title) issue logged",
+                body: body,
+                createdAt: now
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleConciergeBookingOutcome(
+            offer: offer,
+            booking: booking,
+            threadMessage: body,
+            noticeMessage: "\(serviceKind.title) issue logged."
+        )
+    }
+
+    @discardableResult
+    func uploadPostSaleConciergeInvoice(
+        offerID: UUID,
+        userID: UUID,
+        serviceKind: PostSaleConciergeServiceKind,
+        fileName: String,
+        data: Data,
+        mimeType: String,
+        invoiceAmount: Int?
+    ) -> PostSaleConciergeInvoiceOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              let bookingIndex = offer.conciergeBookings.firstIndex(where: { $0.serviceKind == serviceKind }) else {
+            return nil
+        }
+
+        let now = Date()
+        let actorName = user(id: userID)?.name ?? "A participant"
+        var booking = offer.conciergeBookings[bookingIndex]
+        booking.invoiceAttachmentBase64 = data.base64EncodedString()
+        booking.invoiceFileName = fileName
+        booking.invoiceMimeType = mimeType
+        booking.invoiceUploadedAt = now
+        booking.invoiceAmount = invoiceAmount ?? booking.invoiceAmount ?? booking.estimatedCost
+        booking.paidAmount = nil
+        booking.paymentConfirmedAt = nil
+        booking.paymentConfirmedByUserID = nil
+        booking.paymentConfirmedByName = nil
+        booking.paymentProofFileName = nil
+        booking.paymentProofMimeType = nil
+        booking.paymentProofAttachmentBase64 = nil
+        booking.paymentProofUploadedAt = nil
+        offer.conciergeBookings[bookingIndex] = booking
+
+        let invoiceSuffix = booking.invoiceAmount.map {
+            " Total: \(Currency.aud.string(from: NSNumber(value: $0)) ?? "$\($0)")."
+        } ?? ""
+        let body = "\(actorName) uploaded a \(serviceKind.title.lowercased()) invoice from \(booking.provider.name) into the settled archive.\(invoiceSuffix)"
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: "\(serviceKind.title) invoice uploaded",
+                body: body,
+                createdAt: now
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleConciergeInvoiceOutcome(
+            offer: offer,
+            booking: booking,
+            threadMessage: body,
+            noticeMessage: "\(serviceKind.title) invoice added to the archive."
+        )
+    }
+
+    @discardableResult
+    func approvePostSaleConciergeQuote(
+        offerID: UUID,
+        userID: UUID,
+        serviceKind: PostSaleConciergeServiceKind
+    ) -> PostSaleConciergeBookingOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              let bookingIndex = offer.conciergeBookings.firstIndex(where: { $0.serviceKind == serviceKind }) else {
+            return nil
+        }
+
+        var booking = offer.conciergeBookings[bookingIndex]
+        guard booking.estimatedCost != nil,
+              booking.isQuoteApproved == false else {
+            return nil
+        }
+
+        let now = Date()
+        let actorName = user(id: userID)?.name ?? "A participant"
+        booking.quoteApprovedAt = now
+        booking.quoteApprovedByUserID = userID
+        booking.quoteApprovedByName = actorName
+        offer.conciergeBookings[bookingIndex] = booking
+
+        let quoteAmount = booking.estimatedCost.map {
+            Currency.aud.string(from: NSNumber(value: $0)) ?? "$\($0)"
+        } ?? "the recorded amount"
+        let body = "\(actorName) approved the \(serviceKind.title.lowercased()) quote from \(booking.provider.name) at \(quoteAmount)."
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: "\(serviceKind.title) quote approved",
+                body: body,
+                createdAt: now
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleConciergeBookingOutcome(
+            offer: offer,
+            booking: booking,
+            threadMessage: body,
+            noticeMessage: "\(serviceKind.title) quote approved."
+        )
+    }
+
+    @discardableResult
+    func uploadPostSaleConciergePaymentProof(
+        offerID: UUID,
+        userID: UUID,
+        serviceKind: PostSaleConciergeServiceKind,
+        fileName: String,
+        data: Data,
+        mimeType: String,
+        paidAmount: Int?
+    ) -> PostSaleConciergePaymentOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              let bookingIndex = offer.conciergeBookings.firstIndex(where: { $0.serviceKind == serviceKind }) else {
+            return nil
+        }
+
+        let now = Date()
+        let actorName = user(id: userID)?.name ?? "A participant"
+        var booking = offer.conciergeBookings[bookingIndex]
+        guard booking.invoiceAmount != nil || booking.hasInvoiceAttachment || booking.estimatedCost != nil else {
+            return nil
+        }
+
+        if booking.quoteApprovedAt == nil {
+            booking.quoteApprovedAt = now
+            booking.quoteApprovedByUserID = userID
+            booking.quoteApprovedByName = actorName
+        }
+
+        booking.paymentProofAttachmentBase64 = data.base64EncodedString()
+        booking.paymentProofFileName = fileName
+        booking.paymentProofMimeType = mimeType
+        booking.paymentProofUploadedAt = now
+        booking.paidAmount = paidAmount ?? booking.paidAmount ?? booking.invoiceAmount ?? booking.estimatedCost
+        booking.paymentConfirmedAt = now
+        booking.paymentConfirmedByUserID = userID
+        booking.paymentConfirmedByName = actorName
+        offer.conciergeBookings[bookingIndex] = booking
+
+        let paidSuffix = booking.paidAmount.map {
+            " Paid total: \(Currency.aud.string(from: NSNumber(value: $0)) ?? "$\($0)")."
+        } ?? ""
+        let body = "\(actorName) uploaded payment proof for \(serviceKind.title.lowercased()) with \(booking.provider.name).\(paidSuffix)"
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: "\(serviceKind.title) payment confirmed",
+                body: body,
+                createdAt: now
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleConciergePaymentOutcome(
+            offer: offer,
+            booking: booking,
+            threadMessage: body,
+            noticeMessage: "\(serviceKind.title) payment proof saved."
+        )
+    }
+
+    @discardableResult
+    func cancelPostSaleConciergeBooking(
+        offerID: UUID,
+        userID: UUID,
+        serviceKind: PostSaleConciergeServiceKind,
+        reason: String
+    ) -> PostSaleConciergeBookingOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              let bookingIndex = offer.conciergeBookings.firstIndex(where: { $0.serviceKind == serviceKind }) else {
+            return nil
+        }
+
+        var booking = offer.conciergeBookings[bookingIndex]
+        guard booking.isCancelled == false,
+              booking.isCompleted == false else {
+            return nil
+        }
+
+        let now = Date()
+        let actorName = user(id: userID)?.name ?? "A participant"
+        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        booking.status = .cancelled
+        booking.cancelledAt = now
+        booking.cancelledByUserID = userID
+        booking.cancelledByName = actorName
+        booking.cancellationReason = trimmedReason.isEmpty ? nil : trimmedReason
+        booking.reminderSnoozedUntil = nil
+        offer.conciergeBookings[bookingIndex] = booking
+
+        let reasonSuffix = trimmedReason.isEmpty ? "" : " Reason: \(trimmedReason)"
+        let body = "\(actorName) cancelled the \(serviceKind.title.lowercased()) booking with \(booking.provider.name).\(reasonSuffix)"
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: "\(serviceKind.title) cancelled",
+                body: body,
+                createdAt: now
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleConciergeBookingOutcome(
+            offer: offer,
+            booking: booking,
+            threadMessage: body,
+            noticeMessage: "\(serviceKind.title) booking cancelled."
+        )
+    }
+
+    @discardableResult
+    func recordPostSaleConciergeRefund(
+        offerID: UUID,
+        userID: UUID,
+        serviceKind: PostSaleConciergeServiceKind,
+        refundAmount: Int?,
+        note: String
+    ) -> PostSaleConciergeBookingOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              let bookingIndex = offer.conciergeBookings.firstIndex(where: { $0.serviceKind == serviceKind }) else {
+            return nil
+        }
+
+        var booking = offer.conciergeBookings[bookingIndex]
+        guard booking.isRefunded == false,
+              booking.isPaid || booking.hasPaymentProof || booking.invoiceAmount != nil || booking.hasInvoiceAttachment else {
+            return nil
+        }
+
+        let now = Date()
+        let actorName = user(id: userID)?.name ?? "A participant"
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        booking.refundAmount = refundAmount ?? booking.paidAmount ?? booking.invoiceAmount ?? booking.estimatedCost
+        booking.refundProcessedAt = now
+        booking.refundProcessedByUserID = userID
+        booking.refundProcessedByName = actorName
+        booking.refundNote = trimmedNote.isEmpty ? nil : trimmedNote
+        booking.reminderSnoozedUntil = nil
+        offer.conciergeBookings[bookingIndex] = booking
+
+        let amountLabel = booking.refundAmount.map {
+            Currency.aud.string(from: NSNumber(value: $0)) ?? "$\($0)"
+        } ?? "the recorded amount"
+        let noteSuffix = trimmedNote.isEmpty ? "" : " Note: \(trimmedNote)"
+        let body = "\(actorName) recorded a \(serviceKind.title.lowercased()) refund from \(booking.provider.name) for \(amountLabel).\(noteSuffix)"
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: "\(serviceKind.title) refund recorded",
+                body: body,
+                createdAt: now
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleConciergeBookingOutcome(
+            offer: offer,
+            booking: booking,
+            threadMessage: body,
+            noticeMessage: "\(serviceKind.title) refund recorded."
+        )
+    }
+
+    @discardableResult
+    func resolvePostSaleConciergeIssue(
+        offerID: UUID,
+        userID: UUID,
+        serviceKind: PostSaleConciergeServiceKind,
+        resolutionNote: String
+    ) -> PostSaleConciergeBookingOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              let bookingIndex = offer.conciergeBookings.firstIndex(where: { $0.serviceKind == serviceKind }) else {
+            return nil
+        }
+
+        var booking = offer.conciergeBookings[bookingIndex]
+        guard booking.hasOpenIssue else {
+            return nil
+        }
+
+        let now = Date()
+        let actorName = user(id: userID)?.name ?? "A participant"
+        let trimmedNote = resolutionNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        booking.issueResolvedAt = now
+        booking.issueResolvedByUserID = userID
+        booking.issueResolvedByName = actorName
+        booking.issueResolutionNote = trimmedNote.isEmpty ? nil : trimmedNote
+        offer.conciergeBookings[bookingIndex] = booking
+
+        let noteSuffix = trimmedNote.isEmpty ? "" : " Resolution: \(trimmedNote)"
+        let issueLabel = booking.issueKind?.title.lowercased() ?? "service"
+        let body = "\(actorName) resolved the \(issueLabel) issue for \(serviceKind.title.lowercased()) with \(booking.provider.name).\(noteSuffix)"
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: "\(serviceKind.title) issue resolved",
+                body: body,
+                createdAt: now
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleConciergeBookingOutcome(
+            offer: offer,
+            booking: booking,
+            threadMessage: body,
+            noticeMessage: "\(serviceKind.title) issue resolved."
+        )
+    }
+
+    @discardableResult
+    func completePostSaleConciergeBooking(
+        offerID: UUID,
+        userID: UUID,
+        serviceKind: PostSaleConciergeServiceKind
+    ) -> PostSaleConciergeBookingOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil,
+              let bookingIndex = offer.conciergeBookings.firstIndex(where: {
+                  $0.serviceKind == serviceKind && !$0.isCompleted && !$0.isCancelled
+              }) else {
+            return nil
+        }
+
+        let now = Date()
+        var booking = offer.conciergeBookings[bookingIndex]
+        booking.status = .completed
+        booking.completedAt = now
+        booking.reminderSnoozedUntil = nil
+        offer.conciergeBookings[bookingIndex] = booking
+
+        let actorName = user(id: userID)?.name ?? "A participant"
+        let body = "\(actorName) marked \(serviceKind.title.lowercased()) complete with \(booking.provider.name) for this settled deal."
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: serviceKind.completionTitle,
+                body: body,
+                createdAt: now
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleConciergeBookingOutcome(
+            offer: offer,
+            booking: booking,
+            threadMessage: body,
+            noticeMessage: "\(serviceKind.title) marked complete in the archive."
+        )
+    }
+
+    @discardableResult
+    func submitPostSaleFeedback(
+        offerID: UUID,
+        userID: UUID,
+        rating: Int,
+        notes: String
+    ) -> PostSaleFeedbackOutcome? {
+        guard let offerIndex = offers.firstIndex(where: { $0.id == offerID }),
+              (1...5).contains(rating) else {
+            return nil
+        }
+
+        var offer = offers[offerIndex]
+        guard offer.buyerID == userID || offer.sellerID == userID,
+              offer.settlementCompletedAt != nil else {
+            return nil
+        }
+
+        let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedNotes.isEmpty else {
+            return nil
+        }
+
+        let now = Date()
+        let actorName = user(id: userID)?.name ?? "A participant"
+        let entry = PostSaleFeedbackEntry(
+            submittedAt: now,
+            rating: rating,
+            notes: trimmedNotes,
+            submittedByUserID: userID,
+            submittedByName: actorName
+        )
+        let title: String
+
+        if userID == offer.buyerID {
+            title = offer.buyerFeedback == nil ? "Buyer feedback submitted" : "Buyer feedback updated"
+            offer.buyerFeedback = entry
+        } else {
+            title = offer.sellerFeedback == nil ? "Seller feedback submitted" : "Seller feedback updated"
+            offer.sellerFeedback = entry
+        }
+
+        let body = "\(actorName) left post-sale feedback with a \(rating)-star rating for this settled private sale."
+        offer.updates.insert(
+            makeSaleUpdate(
+                title: title,
+                body: body,
+                createdAt: now
+            ),
+            at: 0
+        )
+
+        offers[offerIndex] = offer
+        persist()
+        syncOfferInBackground(offer)
+
+        return PostSaleFeedbackOutcome(
+            offer: offer,
+            threadMessage: body,
+            noticeMessage: "Post-sale feedback saved to the settlement archive."
+        )
+    }
+
     func createListing(from draft: ListingDraft, sellerID: UUID) throws {
         if let moderationIssue = MarketplaceSafetyPolicy.moderationIssue(for: draft.title) ??
             MarketplaceSafetyPolicy.moderationIssue(for: draft.headline) ??
@@ -1224,6 +2451,14 @@ final class MarketplaceStore: ObservableObject {
                 )
             ),
             comparableSales: [],
+            priceJourney: [
+                ListingPriceEvent(
+                    id: UUID(),
+                    amount: askingPrice,
+                    recordedAt: .now,
+                    note: "Listed privately on Real O Who"
+                )
+            ],
             palette: .ocean,
             latitude: draft.latitude,
             longitude: draft.longitude,
@@ -1235,6 +2470,103 @@ final class MarketplaceStore: ObservableObject {
         listings.insert(listing, at: 0)
         persist()
         syncListingInBackground(listing)
+    }
+
+    @discardableResult
+    func repriceListing(
+        listingID: UUID,
+        sellerID: UUID,
+        newPrice: Int,
+        note: String
+    ) throws -> ListingRepriceOutcome {
+        guard let listingIndex = listings.firstIndex(where: { $0.id == listingID }) else {
+            throw ListingRepriceError.listingUnavailable
+        }
+
+        if let moderationIssue = MarketplaceSafetyPolicy.moderationIssue(for: note) {
+            throw moderationIssue
+        }
+
+        guard listings[listingIndex].sellerID == sellerID else {
+            throw ListingRepriceError.notYourListing
+        }
+
+        guard newPrice > 0 else {
+            throw ListingRepriceError.invalidPrice
+        }
+
+        let currentListing = listings[listingIndex]
+        guard currentListing.status == .active || currentListing.status == .draft else {
+            throw ListingRepriceError.listingLocked
+        }
+
+        guard currentListing.askingPrice != newPrice else {
+            throw ListingRepriceError.samePrice
+        }
+
+        let now = Date()
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousPrice = currentListing.askingPrice
+        let changeAmount = newPrice - previousPrice
+        let directionNote: String
+        if changeAmount < 0 {
+            directionNote = "Owner reduced the asking price by \(Currency.aud.string(from: NSNumber(value: abs(changeAmount))) ?? "$\(abs(changeAmount))")."
+        } else {
+            directionNote = "Owner increased the asking price by \(Currency.aud.string(from: NSNumber(value: changeAmount)) ?? "$\(changeAmount)")."
+        }
+        let eventNote = trimmedNote.isEmpty ? directionNote : trimmedNote
+
+        var updatedListing = currentListing
+        updatedListing.askingPrice = newPrice
+        updatedListing.updatedAt = now
+        updatedListing.priceJourney.insert(
+            ListingPriceEvent(
+                id: UUID(),
+                amount: newPrice,
+                recordedAt: now,
+                note: eventNote
+            ),
+            at: 0
+        )
+        listings[listingIndex] = updatedListing
+
+        let formattedPreviousPrice = Currency.aud.string(from: NSNumber(value: previousPrice)) ?? "$\(previousPrice)"
+        let formattedNewPrice = Currency.aud.string(from: NSNumber(value: newPrice)) ?? "$\(newPrice)"
+        let repricingBody = trimmedNote.isEmpty
+            ? "Seller updated the asking price from \(formattedPreviousPrice) to \(formattedNewPrice)."
+            : "Seller updated the asking price from \(formattedPreviousPrice) to \(formattedNewPrice). Note: \(trimmedNote)"
+
+        var impactedOffers: [OfferRecord] = []
+        for offerIndex in offers.indices {
+            guard offers[offerIndex].listingID == listingID,
+                  offers[offerIndex].contractPacket?.isFullySigned != true else {
+                continue
+            }
+
+            offers[offerIndex].updates.insert(
+                makeSaleUpdate(
+                    title: "Asking price updated",
+                    body: repricingBody,
+                    createdAt: now
+                ),
+                at: 0
+            )
+            impactedOffers.append(offers[offerIndex])
+        }
+
+        persist()
+        syncListingInBackground(updatedListing)
+        impactedOffers.forEach(syncOfferInBackground)
+
+        let noticeMessage = "Listing repriced from \(formattedPreviousPrice) to \(formattedNewPrice). The price journey and seller tools are now updated."
+
+        return ListingRepriceOutcome(
+            listing: updatedListing,
+            previousPrice: previousPrice,
+            impactedOffers: impactedOffers,
+            threadMessage: repricingBody,
+            noticeMessage: noticeMessage
+        )
     }
 
     private func load() {
@@ -1482,6 +2814,354 @@ final class MarketplaceStore: ObservableObject {
         }
     }
 
+    private func markVerificationCheckVerified(
+        userID: UUID,
+        kind: VerificationCheckKind,
+        detail: String,
+        verifiedAt: Date = .now,
+        evidenceFileName: String? = nil,
+        evidenceMimeType: String? = nil,
+        evidenceAttachmentBase64: String? = nil,
+        evidenceUploadedAt: Date? = nil
+    ) -> UserVerificationCheck? {
+        guard let userIndex = users.firstIndex(where: { $0.id == userID }) else {
+            return nil
+        }
+
+        var profile = users[userIndex]
+        guard let existingIndex = profile.verificationChecks.firstIndex(where: { $0.kind == kind }) else {
+            return nil
+        }
+
+        let existingCheck = profile.verificationChecks[existingIndex]
+        let resolvedEvidenceFileName = evidenceFileName ?? existingCheck.evidenceFileName
+        let resolvedEvidenceMimeType = evidenceMimeType ?? existingCheck.evidenceMimeType
+        let resolvedEvidenceAttachmentBase64 = evidenceAttachmentBase64 ?? existingCheck.evidenceAttachmentBase64
+        let resolvedEvidenceUploadedAt = evidenceUploadedAt ?? existingCheck.evidenceUploadedAt
+        if existingCheck.status == .verified,
+           existingCheck.detail == detail,
+           existingCheck.evidenceFileName == resolvedEvidenceFileName,
+           existingCheck.evidenceMimeType == resolvedEvidenceMimeType,
+           existingCheck.evidenceAttachmentBase64 == resolvedEvidenceAttachmentBase64,
+           existingCheck.evidenceUploadedAt == resolvedEvidenceUploadedAt {
+            return nil
+        }
+
+        let updatedCheck = UserVerificationCheck.verified(
+            kind,
+            detail: detail,
+            verifiedAt: verifiedAt,
+            evidenceFileName: resolvedEvidenceFileName,
+            evidenceMimeType: resolvedEvidenceMimeType,
+            evidenceAttachmentBase64: resolvedEvidenceAttachmentBase64,
+            evidenceUploadedAt: resolvedEvidenceUploadedAt
+        )
+        profile.verificationChecks[existingIndex] = updatedCheck
+        profile.verificationNote = primaryVerificationNote(for: profile)
+        users[userIndex] = profile
+        return updatedCheck
+    }
+
+    private func unlockContractPacketsForEligibleOffers(
+        triggeredBy userID: UUID
+    ) -> [VerificationUnlockedContractPacket] {
+        var unlocked: [VerificationUnlockedContractPacket] = []
+
+        for offerIndex in offers.indices {
+            var offer = offers[offerIndex]
+            guard offer.contractPacket == nil,
+                  offer.buyerID == userID || offer.sellerID == userID,
+                  let buyerRepresentative = offer.buyerLegalSelection?.professional,
+                  let sellerRepresentative = offer.sellerLegalSelection?.professional,
+                  let packet = prepareContractPacketIfEligible(
+                    for: &offer,
+                    buyerRepresentative: buyerRepresentative,
+                    sellerRepresentative: sellerRepresentative,
+                    triggeredBy: userID,
+                    forceRefresh: false
+                  ) else {
+                continue
+            }
+
+            offer.updates.insert(
+                makeSaleUpdate(
+                    title: "Contract packet sent",
+                    body: packet.summary
+                ),
+                at: 0
+            )
+            offers[offerIndex] = offer
+            unlocked.append(
+                VerificationUnlockedContractPacket(
+                    offer: offer,
+                    packet: packet
+                )
+            )
+        }
+
+        return unlocked
+    }
+
+    private func attachVerificationEvidenceToRelevantOffers(
+        user: UserProfile,
+        kind: VerificationCheckKind
+    ) -> [UUID] {
+        guard let check = user.verificationCheck(for: kind),
+              let documentKind = verificationEvidenceDocumentKind(
+                for: kind,
+                role: user.role
+              ) else {
+            return []
+        }
+
+        var linkedOfferIDs: [UUID] = []
+
+        for offerIndex in offers.indices {
+            var offer = offers[offerIndex]
+            guard let packet = offer.contractPacket else {
+                continue
+            }
+
+            switch kind {
+            case .finance:
+                guard offer.buyerID == user.id else { continue }
+            case .ownership:
+                guard offer.sellerID == user.id else { continue }
+            case .identity, .mobile, .legal:
+                continue
+            }
+
+            guard let document = makeVerificationWorkspaceDocument(
+                kind: documentKind,
+                user: user,
+                check: check,
+                offer: offer,
+                packet: packet
+            ) else {
+                continue
+            }
+
+            let existingDocument = offer.documents.first(where: {
+                $0.kind == document.kind && $0.packetID == document.packetID
+            })
+            guard existingDocument != document else {
+                continue
+            }
+
+            upsertWorkspaceDocument(document, to: &offer)
+            offer.updates.insert(
+                makeSaleUpdate(
+                    title: existingDocument == nil ? document.title : "\(document.title) updated",
+                    body: verificationEvidenceWorkspaceUpdate(
+                        for: kind,
+                        user: user,
+                        fileName: document.fileName,
+                        isReplacement: existingDocument != nil
+                    ),
+                    createdAt: document.createdAt
+                ),
+                at: 0
+            )
+            offers[offerIndex] = offer
+            linkedOfferIDs.append(offer.id)
+        }
+
+        return linkedOfferIDs
+    }
+
+    private func prepareContractPacketIfEligible(
+        for offer: inout OfferRecord,
+        buyerRepresentative: LegalProfessional,
+        sellerRepresentative: LegalProfessional,
+        triggeredBy userID: UUID,
+        forceRefresh: Bool
+    ) -> ContractPacket? {
+        guard canIssueContractPacket(for: offer) else {
+            return nil
+        }
+
+        guard forceRefresh || offer.contractPacket == nil else {
+            return nil
+        }
+
+        let packet = makeContractPacket(
+            offer: offer,
+            buyerRepresentative: buyerRepresentative,
+            sellerRepresentative: sellerRepresentative
+        )
+        offer.contractPacket = packet
+        registerInitialWorkspaceMaterials(for: &offer, packet: packet, triggeredBy: userID)
+        return packet
+    }
+
+    private func canIssueContractPacket(for offer: OfferRecord) -> Bool {
+        guard offer.buyerLegalSelection != nil,
+              offer.sellerLegalSelection != nil,
+              let buyer = user(id: offer.buyerID),
+              let seller = user(id: offer.sellerID) else {
+            return false
+        }
+
+        return buyer.hasVerifiedCheck(.finance) && seller.hasVerifiedCheck(.ownership)
+    }
+
+    private func verificationCompletionDetail(
+        for kind: VerificationCheckKind,
+        userID: UUID
+    ) -> String {
+        let role = user(id: userID)?.role ?? .buyer
+
+        switch kind {
+        case .identity:
+            return role == .seller
+                ? "Seller identity has been reviewed for secure private-sale access."
+                : "Buyer identity has been reviewed for secure private-sale offers."
+        case .mobile:
+            return "Mobile number confirmed for inspections, sale updates, and secure messages."
+        case .finance:
+            return "Finance readiness has been confirmed for direct owner negotiations."
+        case .ownership:
+            return "Ownership evidence has been reviewed for this private property sale."
+        case .legal:
+            return "Legal coordination is active for this profile."
+        }
+    }
+
+    private func verificationEvidenceDetail(
+        for kind: VerificationCheckKind,
+        userID: UUID,
+        fileName: String
+    ) -> String {
+        let role = user(id: userID)?.role ?? .buyer
+
+        switch kind {
+        case .finance:
+            return "\(fileName) is attached as finance proof so sellers can see this buyer is ready to move."
+        case .ownership:
+            return "\(fileName) is attached as ownership evidence for this private property sale."
+        case .identity:
+            return role == .seller
+                ? "Seller identity has been reviewed for secure private-sale access."
+                : "Buyer identity has been reviewed for secure private-sale offers."
+        case .mobile:
+            return "Mobile number confirmed for inspections, sale updates, and secure messages."
+        case .legal:
+            return "Legal coordination is active for this profile."
+        }
+    }
+
+    private func verificationCompletionNotice(
+        for kind: VerificationCheckKind,
+        user: UserProfile,
+        linkedDealRoomCount: Int,
+        unlockedCount: Int
+    ) -> String {
+        let base: String
+
+        switch kind {
+        case .identity:
+            base = "Identity check completed for \(user.name)."
+        case .mobile:
+            base = "Mobile confirmation completed for \(user.name)."
+        case .finance:
+            base = linkedDealRoomCount > 0
+                ? "Finance proof is on file for \(user.name) and attached to \(linkedDealRoomCount) active \(linkedDealRoomCount == 1 ? "deal room" : "deal rooms")."
+                : "Finance proof is now on file for \(user.name)."
+        case .ownership:
+            base = linkedDealRoomCount > 0
+                ? "Ownership evidence is on file for \(user.name) and attached to \(linkedDealRoomCount) active \(linkedDealRoomCount == 1 ? "deal room" : "deal rooms")."
+                : "Ownership evidence is now on file for \(user.name)."
+        case .legal:
+            base = "Legal readiness completed for \(user.name)."
+        }
+
+        guard unlockedCount > 0 else {
+            return base
+        }
+
+        let roomLabel = unlockedCount == 1 ? "deal room" : "deal rooms"
+        return "\(base) \(unlockedCount) \(roomLabel) just unlocked contract issue."
+    }
+
+    private func verificationEvidenceDocumentKind(
+        for kind: VerificationCheckKind,
+        role: UserRole
+    ) -> SaleDocumentKind? {
+        switch (kind, role) {
+        case (.finance, .buyer):
+            return .buyerFinanceProofPDF
+        case (.ownership, .seller):
+            return .sellerOwnershipEvidencePDF
+        default:
+            return nil
+        }
+    }
+
+    private func defaultVerificationEvidenceFileName(
+        for kind: VerificationCheckKind,
+        userID: UUID
+    ) -> String {
+        let suburbSlug = user(id: userID)?
+            .suburb
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+            .replacingOccurrences(of: ",", with: "")
+            ?? "profile"
+
+        switch kind {
+        case .finance:
+            return "real-o-who-finance-proof-\(suburbSlug).pdf"
+        case .ownership:
+            return "real-o-who-ownership-evidence-\(suburbSlug).pdf"
+        case .identity:
+            return "real-o-who-identity-check-\(suburbSlug).pdf"
+        case .mobile:
+            return "real-o-who-mobile-confirmation-\(suburbSlug).pdf"
+        case .legal:
+            return "real-o-who-legal-readiness-\(suburbSlug).pdf"
+        }
+    }
+
+    private func verificationEvidenceWorkspaceUpdate(
+        for kind: VerificationCheckKind,
+        user: UserProfile,
+        fileName: String,
+        isReplacement: Bool
+    ) -> String {
+        switch kind {
+        case .finance:
+            return isReplacement
+                ? "\(user.name) replaced the buyer finance proof with \(fileName). The active deal room now points to the latest pre-approval PDF."
+                : "\(user.name) attached buyer finance proof as \(fileName) so the sale can move forward with document-backed finance readiness."
+        case .ownership:
+            return isReplacement
+                ? "\(user.name) replaced the seller ownership evidence with \(fileName). The active deal room now points to the latest ownership PDF."
+                : "\(user.name) attached seller ownership evidence as \(fileName) so the sale can move forward with document-backed ownership review."
+        case .identity, .mobile, .legal:
+            return "\(user.name) updated a verification document."
+        }
+    }
+
+    private func primaryVerificationNote(for user: UserProfile) -> String {
+        if user.hasVerifiedCheck(.ownership) {
+            return "Ownership documents reviewed"
+        }
+
+        if user.hasVerifiedCheck(.finance) {
+            return "Finance pre-approval uploaded"
+        }
+
+        if user.hasVerifiedCheck(.identity) && user.hasVerifiedCheck(.mobile) {
+            return "Identity and mobile verified"
+        }
+
+        if user.hasVerifiedCheck(.legal) {
+            return "Legal readiness confirmed"
+        }
+
+        return "Verification in progress"
+    }
+
     private func makeContractPacket(
         offer: OfferRecord,
         buyerRepresentative: LegalProfessional,
@@ -1520,6 +3200,24 @@ final class MarketplaceStore: ObservableObject {
         }
         if remoteOffer.documents.isEmpty {
             mergedOffer.documents = existing.documents
+        }
+        if remoteOffer.settlementCompletedAt == nil {
+            mergedOffer.settlementCompletedAt = existing.settlementCompletedAt
+        }
+        if remoteOffer.utilitiesTransferCompletedAt == nil {
+            mergedOffer.utilitiesTransferCompletedAt = existing.utilitiesTransferCompletedAt
+        }
+        if remoteOffer.addressUpdateCompletedAt == nil {
+            mergedOffer.addressUpdateCompletedAt = existing.addressUpdateCompletedAt
+        }
+        if remoteOffer.buyerFeedback == nil {
+            mergedOffer.buyerFeedback = existing.buyerFeedback
+        }
+        if remoteOffer.sellerFeedback == nil {
+            mergedOffer.sellerFeedback = existing.sellerFeedback
+        }
+        if remoteOffer.conciergeBookings.isEmpty {
+            mergedOffer.conciergeBookings = existing.conciergeBookings
         }
         return mergedOffer
     }
@@ -1640,6 +3338,8 @@ final class MarketplaceStore: ObservableObject {
         registerWorkspaceDocument(for: &offer, kind: .contractPacketPDF, packet: packet, triggeredBy: userID, createdAt: packet.generatedAt)
         registerWorkspaceDocument(for: &offer, kind: .councilRatesNoticePDF, packet: packet, triggeredBy: userID, createdAt: packet.generatedAt)
         registerWorkspaceDocument(for: &offer, kind: .identityCheckPackPDF, packet: packet, triggeredBy: userID, createdAt: packet.generatedAt)
+        registerVerificationWorkspaceDocument(for: &offer, userID: offer.buyerID, kind: .finance, packet: packet)
+        registerVerificationWorkspaceDocument(for: &offer, userID: offer.sellerID, kind: .ownership, packet: packet)
     }
 
     private func registerCompletionWorkspaceMaterials(
@@ -1649,6 +3349,16 @@ final class MarketplaceStore: ObservableObject {
     ) {
         registerWorkspaceDocument(for: &offer, kind: .signedContractPDF, packet: packet, triggeredBy: userID, createdAt: .now)
         registerWorkspaceDocument(for: &offer, kind: .settlementStatementPDF, packet: packet, triggeredBy: userID, createdAt: .now)
+    }
+
+    private func registerSettlementArchiveMaterials(
+        for offer: inout OfferRecord,
+        packet: ContractPacket,
+        triggeredBy userID: UUID,
+        createdAt: Date
+    ) {
+        registerWorkspaceDocument(for: &offer, kind: .settlementSummaryPDF, packet: packet, triggeredBy: userID, createdAt: createdAt)
+        registerWorkspaceDocument(for: &offer, kind: .handoverChecklistPDF, packet: packet, triggeredBy: userID, createdAt: createdAt)
     }
 
     private func registerWorkspaceDocument(
@@ -1665,6 +3375,31 @@ final class MarketplaceStore: ObservableObject {
             triggeredBy: userID,
             createdAt: createdAt
         )
+        appendDocumentIfNeeded(document, to: &offer)
+    }
+
+    private func registerVerificationWorkspaceDocument(
+        for offer: inout OfferRecord,
+        userID: UUID,
+        kind: VerificationCheckKind,
+        packet: ContractPacket
+    ) {
+        guard let user = user(id: userID),
+              let check = user.verificationCheck(for: kind),
+              let documentKind = verificationEvidenceDocumentKind(
+                for: kind,
+                role: user.role
+              ),
+              let document = makeVerificationWorkspaceDocument(
+                kind: documentKind,
+                user: user,
+                check: check,
+                offer: offer,
+                packet: packet
+              ) else {
+            return
+        }
+
         appendDocumentIfNeeded(document, to: &offer)
     }
 
@@ -1723,10 +3458,18 @@ final class MarketplaceStore: ObservableObject {
             documentSummary = "Council rates notice for the property with current owner charges and due dates ready for legal review."
         case .identityCheckPackPDF:
             documentSummary = "Identity check pack covering buyer photo ID, seller ownership verification, and signing readiness."
+        case .buyerFinanceProofPDF:
+            documentSummary = "Buyer finance proof PDF attached for the sale workspace and legal review."
+        case .sellerOwnershipEvidencePDF:
+            documentSummary = "Seller ownership evidence PDF attached for the sale workspace and legal review."
         case .signedContractPDF:
             documentSummary = "Signed contract copy for \(formattedAmount) with both buyer and seller signatures recorded."
         case .settlementStatementPDF:
             documentSummary = "Settlement statement for \(formattedAmount) with rates adjustments, balance due, and completion notes."
+        case .settlementSummaryPDF:
+            documentSummary = "Settlement summary for \(formattedAmount) covering closeout timing, participants, signed terms, and final transaction milestones."
+        case .handoverChecklistPDF:
+            documentSummary = "Handover checklist for \(formattedAmount) covering keys, utilities, meter reads, final inspection, and move-in closeout steps."
         case .reviewedContractPDF:
             documentSummary = "Reviewed contract PDF with tracked legal notes and final review comments ready for buyer and seller sign-off."
         case .settlementAdjustmentPDF:
@@ -1747,6 +3490,52 @@ final class MarketplaceStore: ObservableObject {
         )
     }
 
+    private func makeVerificationWorkspaceDocument(
+        kind: SaleDocumentKind,
+        user: UserProfile,
+        check: UserVerificationCheck,
+        offer: OfferRecord,
+        packet: ContractPacket
+    ) -> SaleDocument? {
+        guard let attachmentBase64 = check.evidenceAttachmentBase64 else {
+            return nil
+        }
+
+        let fileName = (check.evidenceFileName?.isEmpty == false ? check.evidenceFileName : nil)
+            ?? makeSaleDocumentFileName(kind: kind, offer: offer)
+        let summary: String
+
+        switch kind {
+        case .buyerFinanceProofPDF:
+            summary = "\(user.name) uploaded buyer finance proof so the seller and legal representatives can review pre-approval evidence inside the sale workspace."
+        case .sellerOwnershipEvidencePDF:
+            summary = "\(user.name) uploaded seller ownership evidence so the buyer and legal representatives can review title-side proof inside the sale workspace."
+        case .contractPacketPDF,
+             .councilRatesNoticePDF,
+             .identityCheckPackPDF,
+             .signedContractPDF,
+             .settlementStatementPDF,
+             .settlementSummaryPDF,
+             .handoverChecklistPDF,
+             .reviewedContractPDF,
+             .settlementAdjustmentPDF:
+            summary = check.detail
+        }
+
+        return SaleDocument(
+            id: UUID(),
+            kind: kind,
+            createdAt: check.evidenceUploadedAt ?? check.verifiedAt ?? .now,
+            fileName: fileName,
+            summary: summary,
+            uploadedByUserID: user.id,
+            uploadedByName: user.name,
+            packetID: packet.id,
+            mimeType: check.evidenceMimeType,
+            attachmentBase64: attachmentBase64
+        )
+    }
+
     private func makeSaleDocumentFileName(kind: SaleDocumentKind, offer: OfferRecord) -> String {
         let listingLabel = listing(id: offer.listingID)?
             .address
@@ -1763,10 +3552,18 @@ final class MarketplaceStore: ObservableObject {
             suffix = "council-rates"
         case .identityCheckPackPDF:
             suffix = "identity-check-pack"
+        case .buyerFinanceProofPDF:
+            suffix = "buyer-finance-proof"
+        case .sellerOwnershipEvidencePDF:
+            suffix = "seller-ownership-evidence"
         case .signedContractPDF:
             suffix = "signed-contract"
         case .settlementStatementPDF:
             suffix = "settlement-statement"
+        case .settlementSummaryPDF:
+            suffix = "settlement-summary"
+        case .handoverChecklistPDF:
+            suffix = "handover-checklist"
         case .reviewedContractPDF:
             suffix = "reviewed-contract"
         case .settlementAdjustmentPDF:
@@ -1791,7 +3588,15 @@ final class MarketplaceStore: ObservableObject {
             summary = "\(invite.professionalName) reviewed the latest contract packet and attached their marked-up contract guidance for the private sale."
         case .settlementAdjustmentPDF:
             summary = "\(invite.professionalName) uploaded settlement adjustments covering rates, balances, and the final settlement breakdown."
-        default:
+        case .settlementSummaryPDF,
+             .handoverChecklistPDF,
+             .contractPacketPDF,
+             .councilRatesNoticePDF,
+             .identityCheckPackPDF,
+             .buyerFinanceProofPDF,
+             .sellerOwnershipEvidencePDF,
+             .signedContractPDF,
+             .settlementStatementPDF:
             summary = invite.shareMessage
         }
 
@@ -1973,6 +3778,45 @@ final class MarketplaceStore: ObservableObject {
         }
     }
 
+    private func makePostSaleConciergeProviderAuditEntry(
+        from booking: PostSaleConciergeBooking,
+        replacedAt: Date,
+        replacedByUserID: UUID,
+        replacedByName: String
+    ) -> PostSaleConciergeProviderAuditEntry {
+        PostSaleConciergeProviderAuditEntry(
+            id: UUID(),
+            provider: booking.provider,
+            scheduledFor: booking.scheduledFor,
+            notes: booking.notes,
+            replacedAt: replacedAt,
+            replacedByUserID: replacedByUserID,
+            replacedByName: replacedByName,
+            estimatedCost: booking.estimatedCost,
+            quoteApprovedAt: booking.quoteApprovedAt,
+            providerConfirmedAt: booking.providerConfirmedAt,
+            providerConfirmationNote: booking.providerConfirmationNote,
+            reminderSnoozedUntil: booking.reminderSnoozedUntil,
+            lastFollowUpAt: booking.lastFollowUpAt,
+            lastFollowUpByName: booking.lastFollowUpByName,
+            followUpCount: booking.followUpCount,
+            lastFollowUpNote: booking.lastFollowUpNote,
+            invoiceAmount: booking.invoiceAmount,
+            paidAmount: booking.paidAmount,
+            refundAmount: booking.refundAmount,
+            issueKind: booking.issueKind,
+            issueNote: booking.issueNote,
+            issueResolvedAt: booking.issueResolvedAt,
+            issueResolutionNote: booking.issueResolutionNote,
+            hadInvoiceAttachment: booking.hasInvoiceAttachment,
+            hadPaymentProof: booking.hasPaymentProof,
+            status: booking.status,
+            completedAt: booking.completedAt,
+            cancelledAt: booking.cancelledAt,
+            cancellationReason: booking.cancellationReason
+        )
+    }
+
     private func makeSaleUpdate(
         title: String,
         body: String,
@@ -1998,6 +3842,72 @@ struct SellerDashboardStats {
     var averageDemandScore: Int
 }
 
+struct ConciergeReminderDashboard {
+    var intensity: ConciergeReminderIntensity
+    var activeBookingCount: Int
+    var overdueCount: Int
+    var dueSoonCount: Int
+    var snoozedCount: Int
+    var openIssueCount: Int
+
+    var surfacedDueSoonCount: Int {
+        intensity.showsDueSoonAttention ? dueSoonCount : 0
+    }
+
+    var surfacedAttentionCount: Int {
+        overdueCount + surfacedDueSoonCount
+    }
+
+    var hasEscalatedAttention: Bool {
+        surfacedAttentionCount > 0
+    }
+
+    var headline: String {
+        if overdueCount > 0 {
+            return overdueCount == 1
+                ? "1 overdue provider follow-up needs attention."
+                : "\(overdueCount) overdue provider follow-ups need attention."
+        }
+
+        if surfacedDueSoonCount > 0 {
+            return surfacedDueSoonCount == 1
+                ? "1 provider reply window is due soon."
+                : "\(surfacedDueSoonCount) provider reply windows are due soon."
+        }
+
+        return "No concierge provider follow-ups need attention right now."
+    }
+
+    var supportingLine: String {
+        if overdueCount > 0 && surfacedDueSoonCount > 0 {
+            return "\(surfacedDueSoonCount) more booking\(surfacedDueSoonCount == 1 ? "" : "s") are due soon. Reminder mode: \(intensity.title)."
+        }
+
+        if overdueCount > 0 {
+            return "Reminder mode: \(intensity.title). Snoozed reminders: \(snoozedCount)."
+        }
+
+        if surfacedDueSoonCount > 0 {
+            return "Reminder mode: \(intensity.title). We are surfacing upcoming provider reply windows early."
+        }
+
+        return intensity.detail
+    }
+}
+
+struct VerificationUnlockedContractPacket {
+    var offer: OfferRecord
+    var packet: ContractPacket
+}
+
+struct VerificationCompletionOutcome {
+    var user: UserProfile
+    var completedCheck: UserVerificationCheck
+    var unlockedContractPackets: [VerificationUnlockedContractPacket]
+    var linkedDealRoomCount: Int
+    var noticeMessage: String
+}
+
 struct LegalSelectionOutcome {
     var offer: OfferRecord
     var contractPacket: ContractPacket?
@@ -2007,6 +3917,20 @@ struct OfferSubmissionOutcome {
     var offer: OfferRecord
     var contractPacket: ContractPacket?
     var isRevision: Bool
+}
+
+struct ListingRepriceOutcome {
+    var listing: PropertyListing
+    var previousPrice: Int
+    var impactedOffers: [OfferRecord]
+    var threadMessage: String
+    var noticeMessage: String
+}
+
+struct SellerOfferDispositionOutcome {
+    var offer: OfferRecord
+    var downgradedOfferIDs: [UUID]
+    var noticeMessage: String
 }
 
 struct ReminderTimelineActivityOutcome {
@@ -2028,12 +3952,74 @@ struct ContractSigningOutcome {
     var didCompleteSale: Bool
 }
 
+struct SettlementCompletionOutcome {
+    var offer: OfferRecord
+    var threadMessage: String
+    var noticeMessage: String
+}
+
+struct PostSaleServiceOutcome {
+    var offer: OfferRecord
+    var threadMessage: String
+    var noticeMessage: String
+}
+
+struct PostSaleConciergeBookingOutcome {
+    var offer: OfferRecord
+    var booking: PostSaleConciergeBooking
+    var threadMessage: String
+    var noticeMessage: String
+}
+
+struct PostSaleConciergeInvoiceOutcome {
+    var offer: OfferRecord
+    var booking: PostSaleConciergeBooking
+    var threadMessage: String
+    var noticeMessage: String
+}
+
+struct PostSaleConciergePaymentOutcome {
+    var offer: OfferRecord
+    var booking: PostSaleConciergeBooking
+    var threadMessage: String
+    var noticeMessage: String
+}
+
+struct PostSaleFeedbackOutcome {
+    var offer: OfferRecord
+    var threadMessage: String
+    var noticeMessage: String
+}
+
 struct LegalWorkspaceActionOutcome {
     var offer: OfferRecord
     var representedPartyID: UUID
     var checklistItemID: String
     var threadMessage: String
     var noticeMessage: String
+}
+
+enum ListingRepriceError: LocalizedError {
+    case listingUnavailable
+    case notYourListing
+    case invalidPrice
+    case samePrice
+    case listingLocked
+
+    var errorDescription: String? {
+        switch self {
+        case .listingUnavailable:
+            return "That listing could not be found right now."
+        case .notYourListing:
+            return "Only the owner of this listing can reprice it."
+        case .invalidPrice:
+            return "Enter a valid asking price before saving."
+        case .samePrice:
+            return "The new asking price is the same as the current one."
+        case .listingLocked:
+            return "This listing can no longer be repriced because it is already under offer or sold."
+        }
+    }
 }
 
 private struct MarketplaceSnapshot: Codable {

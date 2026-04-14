@@ -7,6 +7,8 @@ struct SaleReminderNavigationTarget: Hashable, Codable, Sendable {
     let offerID: UUID
     let checklistItemID: String
 
+    private static let conciergePrefix = "concierge-"
+
     static func saleTask(
         listingID: UUID,
         offerID: UUID,
@@ -23,8 +25,25 @@ struct SaleReminderNavigationTarget: Hashable, Codable, Sendable {
         "\(listingID.uuidString)|\(offerID.uuidString)|\(checklistItemID)"
     }
 
+    var conciergeServiceKind: PostSaleConciergeServiceKind? {
+        guard checklistItemID.hasPrefix(Self.conciergePrefix) else {
+            return nil
+        }
+
+        let rawValue = String(checklistItemID.dropFirst(Self.conciergePrefix.count))
+        return PostSaleConciergeServiceKind(rawValue: rawValue)
+    }
+
+    var isConciergeReminder: Bool {
+        conciergeServiceKind != nil
+    }
+
     var notificationActionTitle: String {
-        switch checklistItemID {
+        if let conciergeServiceKind {
+            return "Open \(conciergeServiceKind.title) Booking"
+        }
+
+        return switch checklistItemID {
         case "buyer-representative":
             "Choose Buyer Legal Rep"
         case "seller-representative":
@@ -98,6 +117,7 @@ final class SaleReminderService: NSObject, ObservableObject {
 
     private let center: UNUserNotificationCenter
     private let defaults: UserDefaults
+    private let isScreenshotMode: Bool
     var quickCompletionHandler: (@MainActor @Sendable (SaleReminderQuickCompletionRequest) async -> SaleReminderActionFeedback?)?
     var quickSnoozeHandler: (@MainActor @Sendable (SaleReminderSnoozeRequest) async -> SaleReminderActionFeedback?)?
     nonisolated private static let identifierPrefix = "real-o-who.sale.reminder."
@@ -114,11 +134,13 @@ final class SaleReminderService: NSObject, ObservableObject {
     nonisolated private static let snoozeActionIdentifier = "real-o-who.sale.reminder.action.snooze"
 
     init(
+        isScreenshotMode: Bool = ProcessInfo.processInfo.arguments.contains("--screenshot-mode"),
         center: UNUserNotificationCenter = .current(),
         defaults: UserDefaults = .standard
     ) {
         self.center = center
         self.defaults = defaults
+        self.isScreenshotMode = isScreenshotMode
         super.init()
         center.delegate = self
         center.setNotificationCategories([])
@@ -146,6 +168,10 @@ final class SaleReminderService: NSObject, ObservableObject {
                     listing: listingsByID[offer.listingID],
                     currentUser: currentUser,
                     taskSnapshots: taskSnapshots
+                ) + conciergeReminderPayloads(
+                    for: offer,
+                    listing: listingsByID[offer.listingID],
+                    currentUser: currentUser
                 )
             }
             .sorted { left, right in
@@ -354,6 +380,71 @@ final class SaleReminderService: NSObject, ObservableObject {
         }
     }
 
+    private func conciergeReminderPayloads(
+        for offer: OfferRecord,
+        listing: PropertyListing?,
+        currentUser: UserProfile
+    ) -> [ScheduledReminder] {
+        let listingTitle = listing?.title ?? "Private sale archive"
+        let snoozes = snoozeMap()
+        let intensity = currentUser.conciergeReminderIntensity
+
+        return offer.conciergeBookings.compactMap { booking in
+            guard !booking.isCancelled,
+                  !booking.isCompleted,
+                  !booking.isProviderConfirmed,
+                  let responseDueAt = booking.responseDueAt else {
+                return nil
+            }
+
+            let isFollowUpDue = booking.needsResponseFollowUp
+            let isDueSoon = booking.isResponseDueSoon
+            let shouldIncludeDueSoon = intensity.includesDueSoonNotifications && isDueSoon
+            guard isFollowUpDue || shouldIncludeDueSoon else {
+                return nil
+            }
+
+            let target = SaleReminderNavigationTarget(
+                listingID: offer.listingID,
+                offerID: offer.id,
+                checklistItemID: "concierge-\(booking.serviceKind.rawValue)"
+            )
+            let identifier = Self.identifier(for: target)
+            if let snoozedUntil = snoozes[identifier], snoozedUntil > .now {
+                return nil
+            }
+
+            let triggerDate: Date
+            if isFollowUpDue {
+                triggerDate = .now.addingTimeInterval(15)
+            } else {
+                let soonTrigger = min(
+                    responseDueAt,
+                    .now.addingTimeInterval(intensity == .handsOn ? 60 * 10 : 60 * 30)
+                )
+                triggerDate = max(soonTrigger, .now.addingTimeInterval(15))
+            }
+
+            return ScheduledReminder(
+                identifier: identifier,
+                target: target,
+                title: "\(booking.serviceKind.title) provider follow-up",
+                subtitle: listingTitle,
+                body: conciergeReminderBody(
+                    for: booking,
+                    responseDueAt: responseDueAt,
+                    intensity: intensity
+                ),
+                actionTitle: target.notificationActionTitle,
+                categoryIdentifier: "\(identifier).category",
+                completionActionTitle: "Log Follow-Up",
+                completionActivityTitle: "Provider follow-up logged",
+                triggerDate: triggerDate,
+                priority: conciergePriority(for: booking, intensity: intensity)
+            )
+        }
+    }
+
     private func priority(for item: SaleChecklistItem) -> Int {
         if item.isOverdue { return 0 }
         if item.reminderSummary != nil { return 1 }
@@ -368,7 +459,44 @@ final class SaleReminderService: NSObject, ObservableObject {
         }
     }
 
+    private func conciergePriority(
+        for booking: PostSaleConciergeBooking,
+        intensity: ConciergeReminderIntensity
+    ) -> Int {
+        if booking.needsResponseFollowUp { return 0 }
+        if booking.isResponseDueSoon { return intensity == .handsOn ? 0 : 1 }
+        return 3
+    }
+
+    private func conciergeReminderBody(
+        for booking: PostSaleConciergeBooking,
+        responseDueAt: Date,
+        intensity: ConciergeReminderIntensity
+    ) -> String {
+        let dueSummary = responseDueAt.formatted(date: .abbreviated, time: .shortened)
+        let urgentPrefix = intensity.escalatesOverdueAsUrgent ? "Urgent: " : ""
+
+        if booking.needsResponseFollowUp {
+            if let lastFollowUpAt = booking.lastFollowUpAt {
+                let followUpSummary = lastFollowUpAt.formatted(date: .abbreviated, time: .shortened)
+                return "\(urgentPrefix)\(booking.provider.name) still has not confirmed the \(booking.serviceKind.title.lowercased()) booking. Response was due \(dueSummary). Last follow-up was \(followUpSummary)."
+            }
+
+            return "\(urgentPrefix)\(booking.provider.name) still has not confirmed the \(booking.serviceKind.title.lowercased()) booking. Response was due \(dueSummary)."
+        }
+
+        if intensity == .handsOn {
+            return "Priority watch: \(booking.provider.name) has not confirmed the \(booking.serviceKind.title.lowercased()) booking yet. Response is due by \(dueSummary)."
+        }
+
+        return "\(booking.provider.name) has not confirmed the \(booking.serviceKind.title.lowercased()) booking yet. Response is due by \(dueSummary)."
+    }
+
     private func ensureAuthorization() async -> Bool {
+        guard !isScreenshotMode else {
+            return false
+        }
+
         let settings = await center.notificationSettings()
         switch settings.authorizationStatus {
         case .authorized, .provisional, .ephemeral:

@@ -68,6 +68,8 @@ nonisolated struct MarketplaceWireUserProfile: Codable, Sendable {
     var headline: String
     var verificationNote: String
     var buyerStage: BuyerStage?
+    var verificationChecks: [UserVerificationCheck]
+    var conciergeReminderIntensity: ConciergeReminderIntensity
 
     init(_ user: UserProfile) {
         id = user.id
@@ -77,6 +79,49 @@ nonisolated struct MarketplaceWireUserProfile: Codable, Sendable {
         headline = user.headline
         verificationNote = user.verificationNote
         buyerStage = user.buyerStage
+        verificationChecks = user.verificationChecks
+        conciergeReminderIntensity = user.conciergeReminderIntensity
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case role
+        case suburb
+        case headline
+        case verificationNote
+        case buyerStage
+        case verificationChecks
+        case conciergeReminderIntensity
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        role = try container.decode(UserRole.self, forKey: .role)
+        suburb = try container.decode(String.self, forKey: .suburb)
+        headline = try container.decode(String.self, forKey: .headline)
+        verificationNote = try container.decode(String.self, forKey: .verificationNote)
+        buyerStage = try container.decodeIfPresent(BuyerStage.self, forKey: .buyerStage)
+        verificationChecks = try container.decodeIfPresent([UserVerificationCheck].self, forKey: .verificationChecks) ?? []
+        conciergeReminderIntensity = try container.decodeIfPresent(
+            ConciergeReminderIntensity.self,
+            forKey: .conciergeReminderIntensity
+        ) ?? .balanced
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(role, forKey: .role)
+        try container.encode(suburb, forKey: .suburb)
+        try container.encode(headline, forKey: .headline)
+        try container.encode(verificationNote, forKey: .verificationNote)
+        try container.encodeIfPresent(buyerStage, forKey: .buyerStage)
+        try container.encode(verificationChecks, forKey: .verificationChecks)
+        try container.encode(conciergeReminderIntensity, forKey: .conciergeReminderIntensity)
     }
 
     nonisolated func toAppModel() -> UserProfile {
@@ -87,7 +132,9 @@ nonisolated struct MarketplaceWireUserProfile: Codable, Sendable {
             suburb: suburb,
             headline: headline,
             verificationNote: verificationNote,
-            buyerStage: buyerStage
+            buyerStage: buyerStage,
+            verificationChecks: verificationChecks,
+            conciergeReminderIntensity: conciergeReminderIntensity
         )
     }
 }
@@ -251,6 +298,389 @@ nonisolated struct MarketplaceWireLegalSelection: Codable, Sendable {
             userID: userID,
             selectedAt: selectedAt,
             professional: professional.toAppModel()
+        )
+    }
+}
+
+nonisolated struct MarketplaceWirePostSaleConciergeProvider: Codable, Sendable {
+    var id: String
+    var serviceKind: PostSaleConciergeServiceKind
+    var name: String
+    var specialties: [String]
+    var address: String
+    var suburb: String
+    var phoneNumber: String?
+    var websiteURL: URL?
+    var mapsURL: URL?
+    var latitude: Double
+    var longitude: Double
+    var rating: Double?
+    var reviewCount: Int?
+    var indicativePriceLow: Int?
+    var indicativePriceHigh: Int?
+    var estimatedResponseHours: Int?
+    var source: PostSaleConciergeProviderSource
+    var searchSummary: String
+
+    nonisolated init(_ provider: PostSaleConciergeProvider) {
+        id = provider.id
+        serviceKind = provider.serviceKind
+        name = provider.name
+        specialties = provider.specialties
+        address = provider.address
+        suburb = provider.suburb
+        phoneNumber = provider.phoneNumber
+        websiteURL = provider.websiteURL
+        mapsURL = provider.mapsURL
+        latitude = provider.latitude
+        longitude = provider.longitude
+        rating = provider.rating
+        reviewCount = provider.reviewCount
+        indicativePriceLow = provider.indicativePriceLow
+        indicativePriceHigh = provider.indicativePriceHigh
+        estimatedResponseHours = provider.estimatedResponseHours
+        source = provider.source
+        searchSummary = provider.searchSummary
+    }
+
+    nonisolated func toAppModel() -> PostSaleConciergeProvider {
+        PostSaleConciergeProvider(
+            id: id,
+            serviceKind: serviceKind,
+            name: name,
+            specialties: specialties,
+            address: address,
+            suburb: suburb,
+            phoneNumber: phoneNumber,
+            websiteURL: websiteURL,
+            mapsURL: mapsURL,
+            latitude: latitude,
+            longitude: longitude,
+            rating: rating,
+            reviewCount: reviewCount,
+            indicativePriceLow: indicativePriceLow,
+            indicativePriceHigh: indicativePriceHigh,
+            estimatedResponseHours: estimatedResponseHours,
+            source: source,
+            searchSummary: searchSummary
+        )
+    }
+}
+
+nonisolated struct MarketplaceWirePostSaleFeedbackEntry: Codable, Sendable {
+    var submittedAt: Date
+    var rating: Int
+    var notes: String
+    var submittedByUserID: UUID
+    var submittedByName: String
+
+    nonisolated init(_ entry: PostSaleFeedbackEntry) {
+        submittedAt = entry.submittedAt
+        rating = entry.rating
+        notes = entry.notes
+        submittedByUserID = entry.submittedByUserID
+        submittedByName = entry.submittedByName
+    }
+
+    nonisolated func toAppModel() -> PostSaleFeedbackEntry {
+        PostSaleFeedbackEntry(
+            submittedAt: submittedAt,
+            rating: rating,
+            notes: notes,
+            submittedByUserID: submittedByUserID,
+            submittedByName: submittedByName
+        )
+    }
+}
+
+nonisolated struct MarketplaceWirePostSaleConciergeBooking: Codable, Sendable {
+    var id: UUID
+    var serviceKind: PostSaleConciergeServiceKind
+    var provider: MarketplaceWirePostSaleConciergeProvider
+    var scheduledFor: Date
+    var bookedAt: Date
+    var bookedByUserID: UUID
+    var bookedByName: String
+    var notes: String
+    var previousScheduledFor: Date?
+    var lastRescheduledAt: Date?
+    var lastRescheduledByUserID: UUID?
+    var lastRescheduledByName: String?
+    var rescheduleCount: Int?
+    var estimatedCost: Int?
+    var quoteApprovedAt: Date?
+    var quoteApprovedByUserID: UUID?
+    var quoteApprovedByName: String?
+    var providerConfirmedAt: Date?
+    var providerConfirmedByUserID: UUID?
+    var providerConfirmedByName: String?
+    var providerConfirmationNote: String?
+    var reminderSnoozedUntil: Date?
+    var lastFollowUpAt: Date?
+    var lastFollowUpByUserID: UUID?
+    var lastFollowUpByName: String?
+    var followUpCount: Int?
+    var lastFollowUpNote: String?
+    var invoiceAmount: Int?
+    var invoiceFileName: String?
+    var invoiceMimeType: String?
+    var invoiceAttachmentBase64: String?
+    var invoiceUploadedAt: Date?
+    var paidAmount: Int?
+    var paymentConfirmedAt: Date?
+    var paymentConfirmedByUserID: UUID?
+    var paymentConfirmedByName: String?
+    var paymentProofFileName: String?
+    var paymentProofMimeType: String?
+    var paymentProofAttachmentBase64: String?
+    var paymentProofUploadedAt: Date?
+    var cancelledAt: Date?
+    var cancelledByUserID: UUID?
+    var cancelledByName: String?
+    var cancellationReason: String?
+    var refundAmount: Int?
+    var refundProcessedAt: Date?
+    var refundProcessedByUserID: UUID?
+    var refundProcessedByName: String?
+    var refundNote: String?
+    var issueKind: PostSaleConciergeIssueKind?
+    var issueLoggedAt: Date?
+    var issueLoggedByUserID: UUID?
+    var issueLoggedByName: String?
+    var issueNote: String?
+    var issueResolvedAt: Date?
+    var issueResolvedByUserID: UUID?
+    var issueResolvedByName: String?
+    var issueResolutionNote: String?
+    var providerAuditHistory: [MarketplaceWirePostSaleConciergeProviderAuditEntry]?
+    var status: PostSaleConciergeBookingStatus
+    var completedAt: Date?
+
+    nonisolated init(_ booking: PostSaleConciergeBooking) {
+        id = booking.id
+        serviceKind = booking.serviceKind
+        provider = MarketplaceWirePostSaleConciergeProvider(booking.provider)
+        scheduledFor = booking.scheduledFor
+        bookedAt = booking.bookedAt
+        bookedByUserID = booking.bookedByUserID
+        bookedByName = booking.bookedByName
+        notes = booking.notes
+        previousScheduledFor = booking.previousScheduledFor
+        lastRescheduledAt = booking.lastRescheduledAt
+        lastRescheduledByUserID = booking.lastRescheduledByUserID
+        lastRescheduledByName = booking.lastRescheduledByName
+        rescheduleCount = booking.rescheduleCount
+        estimatedCost = booking.estimatedCost
+        quoteApprovedAt = booking.quoteApprovedAt
+        quoteApprovedByUserID = booking.quoteApprovedByUserID
+        quoteApprovedByName = booking.quoteApprovedByName
+        providerConfirmedAt = booking.providerConfirmedAt
+        providerConfirmedByUserID = booking.providerConfirmedByUserID
+        providerConfirmedByName = booking.providerConfirmedByName
+        providerConfirmationNote = booking.providerConfirmationNote
+        reminderSnoozedUntil = booking.reminderSnoozedUntil
+        lastFollowUpAt = booking.lastFollowUpAt
+        lastFollowUpByUserID = booking.lastFollowUpByUserID
+        lastFollowUpByName = booking.lastFollowUpByName
+        followUpCount = booking.followUpCount
+        lastFollowUpNote = booking.lastFollowUpNote
+        invoiceAmount = booking.invoiceAmount
+        invoiceFileName = booking.invoiceFileName
+        invoiceMimeType = booking.invoiceMimeType
+        invoiceAttachmentBase64 = booking.invoiceAttachmentBase64
+        invoiceUploadedAt = booking.invoiceUploadedAt
+        paidAmount = booking.paidAmount
+        paymentConfirmedAt = booking.paymentConfirmedAt
+        paymentConfirmedByUserID = booking.paymentConfirmedByUserID
+        paymentConfirmedByName = booking.paymentConfirmedByName
+        paymentProofFileName = booking.paymentProofFileName
+        paymentProofMimeType = booking.paymentProofMimeType
+        paymentProofAttachmentBase64 = booking.paymentProofAttachmentBase64
+        paymentProofUploadedAt = booking.paymentProofUploadedAt
+        cancelledAt = booking.cancelledAt
+        cancelledByUserID = booking.cancelledByUserID
+        cancelledByName = booking.cancelledByName
+        cancellationReason = booking.cancellationReason
+        refundAmount = booking.refundAmount
+        refundProcessedAt = booking.refundProcessedAt
+        refundProcessedByUserID = booking.refundProcessedByUserID
+        refundProcessedByName = booking.refundProcessedByName
+        refundNote = booking.refundNote
+        issueKind = booking.issueKind
+        issueLoggedAt = booking.issueLoggedAt
+        issueLoggedByUserID = booking.issueLoggedByUserID
+        issueLoggedByName = booking.issueLoggedByName
+        issueNote = booking.issueNote
+        issueResolvedAt = booking.issueResolvedAt
+        issueResolvedByUserID = booking.issueResolvedByUserID
+        issueResolvedByName = booking.issueResolvedByName
+        issueResolutionNote = booking.issueResolutionNote
+        providerAuditHistory = booking.providerAuditHistory?.map(MarketplaceWirePostSaleConciergeProviderAuditEntry.init)
+        status = booking.status
+        completedAt = booking.completedAt
+    }
+
+    nonisolated func toAppModel() -> PostSaleConciergeBooking {
+        PostSaleConciergeBooking(
+            id: id,
+            serviceKind: serviceKind,
+            provider: provider.toAppModel(),
+            scheduledFor: scheduledFor,
+            bookedAt: bookedAt,
+            bookedByUserID: bookedByUserID,
+            bookedByName: bookedByName,
+            notes: notes,
+            previousScheduledFor: previousScheduledFor,
+            lastRescheduledAt: lastRescheduledAt,
+            lastRescheduledByUserID: lastRescheduledByUserID,
+            lastRescheduledByName: lastRescheduledByName,
+            rescheduleCount: rescheduleCount,
+            estimatedCost: estimatedCost,
+            quoteApprovedAt: quoteApprovedAt,
+            quoteApprovedByUserID: quoteApprovedByUserID,
+            quoteApprovedByName: quoteApprovedByName,
+            providerConfirmedAt: providerConfirmedAt,
+            providerConfirmedByUserID: providerConfirmedByUserID,
+            providerConfirmedByName: providerConfirmedByName,
+            providerConfirmationNote: providerConfirmationNote,
+            reminderSnoozedUntil: reminderSnoozedUntil,
+            lastFollowUpAt: lastFollowUpAt,
+            lastFollowUpByUserID: lastFollowUpByUserID,
+            lastFollowUpByName: lastFollowUpByName,
+            followUpCount: followUpCount,
+            lastFollowUpNote: lastFollowUpNote,
+            invoiceAmount: invoiceAmount,
+            invoiceFileName: invoiceFileName,
+            invoiceMimeType: invoiceMimeType,
+            invoiceAttachmentBase64: invoiceAttachmentBase64,
+            invoiceUploadedAt: invoiceUploadedAt,
+            paidAmount: paidAmount,
+            paymentConfirmedAt: paymentConfirmedAt,
+            paymentConfirmedByUserID: paymentConfirmedByUserID,
+            paymentConfirmedByName: paymentConfirmedByName,
+            paymentProofFileName: paymentProofFileName,
+            paymentProofMimeType: paymentProofMimeType,
+            paymentProofAttachmentBase64: paymentProofAttachmentBase64,
+            paymentProofUploadedAt: paymentProofUploadedAt,
+            cancelledAt: cancelledAt,
+            cancelledByUserID: cancelledByUserID,
+            cancelledByName: cancelledByName,
+            cancellationReason: cancellationReason,
+            refundAmount: refundAmount,
+            refundProcessedAt: refundProcessedAt,
+            refundProcessedByUserID: refundProcessedByUserID,
+            refundProcessedByName: refundProcessedByName,
+            refundNote: refundNote,
+            issueKind: issueKind,
+            issueLoggedAt: issueLoggedAt,
+            issueLoggedByUserID: issueLoggedByUserID,
+            issueLoggedByName: issueLoggedByName,
+            issueNote: issueNote,
+            issueResolvedAt: issueResolvedAt,
+            issueResolvedByUserID: issueResolvedByUserID,
+            issueResolvedByName: issueResolvedByName,
+            issueResolutionNote: issueResolutionNote,
+            providerAuditHistory: providerAuditHistory?.map { $0.toAppModel() },
+            status: status,
+            completedAt: completedAt
+        )
+    }
+}
+
+nonisolated struct MarketplaceWirePostSaleConciergeProviderAuditEntry: Codable, Sendable {
+    var id: UUID
+    var provider: MarketplaceWirePostSaleConciergeProvider
+    var scheduledFor: Date
+    var notes: String
+    var replacedAt: Date
+    var replacedByUserID: UUID
+    var replacedByName: String
+    var estimatedCost: Int?
+    var quoteApprovedAt: Date?
+    var providerConfirmedAt: Date?
+    var providerConfirmationNote: String?
+    var reminderSnoozedUntil: Date?
+    var lastFollowUpAt: Date?
+    var lastFollowUpByName: String?
+    var followUpCount: Int?
+    var lastFollowUpNote: String?
+    var invoiceAmount: Int?
+    var paidAmount: Int?
+    var refundAmount: Int?
+    var issueKind: PostSaleConciergeIssueKind?
+    var issueNote: String?
+    var issueResolvedAt: Date?
+    var issueResolutionNote: String?
+    var hadInvoiceAttachment: Bool
+    var hadPaymentProof: Bool
+    var status: PostSaleConciergeBookingStatus
+    var completedAt: Date?
+    var cancelledAt: Date?
+    var cancellationReason: String?
+
+    nonisolated init(_ auditEntry: PostSaleConciergeProviderAuditEntry) {
+        id = auditEntry.id
+        provider = MarketplaceWirePostSaleConciergeProvider(auditEntry.provider)
+        scheduledFor = auditEntry.scheduledFor
+        notes = auditEntry.notes
+        replacedAt = auditEntry.replacedAt
+        replacedByUserID = auditEntry.replacedByUserID
+        replacedByName = auditEntry.replacedByName
+        estimatedCost = auditEntry.estimatedCost
+        quoteApprovedAt = auditEntry.quoteApprovedAt
+        providerConfirmedAt = auditEntry.providerConfirmedAt
+        providerConfirmationNote = auditEntry.providerConfirmationNote
+        reminderSnoozedUntil = auditEntry.reminderSnoozedUntil
+        lastFollowUpAt = auditEntry.lastFollowUpAt
+        lastFollowUpByName = auditEntry.lastFollowUpByName
+        followUpCount = auditEntry.followUpCount
+        lastFollowUpNote = auditEntry.lastFollowUpNote
+        invoiceAmount = auditEntry.invoiceAmount
+        paidAmount = auditEntry.paidAmount
+        refundAmount = auditEntry.refundAmount
+        issueKind = auditEntry.issueKind
+        issueNote = auditEntry.issueNote
+        issueResolvedAt = auditEntry.issueResolvedAt
+        issueResolutionNote = auditEntry.issueResolutionNote
+        hadInvoiceAttachment = auditEntry.hadInvoiceAttachment
+        hadPaymentProof = auditEntry.hadPaymentProof
+        status = auditEntry.status
+        completedAt = auditEntry.completedAt
+        cancelledAt = auditEntry.cancelledAt
+        cancellationReason = auditEntry.cancellationReason
+    }
+
+    nonisolated func toAppModel() -> PostSaleConciergeProviderAuditEntry {
+        PostSaleConciergeProviderAuditEntry(
+            id: id,
+            provider: provider.toAppModel(),
+            scheduledFor: scheduledFor,
+            notes: notes,
+            replacedAt: replacedAt,
+            replacedByUserID: replacedByUserID,
+            replacedByName: replacedByName,
+            estimatedCost: estimatedCost,
+            quoteApprovedAt: quoteApprovedAt,
+            providerConfirmedAt: providerConfirmedAt,
+            providerConfirmationNote: providerConfirmationNote,
+            reminderSnoozedUntil: reminderSnoozedUntil,
+            lastFollowUpAt: lastFollowUpAt,
+            lastFollowUpByName: lastFollowUpByName,
+            followUpCount: followUpCount,
+            lastFollowUpNote: lastFollowUpNote,
+            invoiceAmount: invoiceAmount,
+            paidAmount: paidAmount,
+            refundAmount: refundAmount,
+            issueKind: issueKind,
+            issueNote: issueNote,
+            issueResolvedAt: issueResolvedAt,
+            issueResolutionNote: issueResolutionNote,
+            hadInvoiceAttachment: hadInvoiceAttachment,
+            hadPaymentProof: hadPaymentProof,
+            status: status,
+            completedAt: completedAt,
+            cancelledAt: cancelledAt,
+            cancellationReason: cancellationReason
         )
     }
 }
@@ -435,9 +865,16 @@ nonisolated struct MarketplaceWireSaleRecord: Codable, Sendable {
     var conditions: String
     var createdAt: Date
     var status: OfferStatus
+    var sellerRelationshipStatus: SellerBuyerRelationshipStatus
     var buyerLegalSelection: MarketplaceWireLegalSelection?
     var sellerLegalSelection: MarketplaceWireLegalSelection?
     var contractPacket: MarketplaceWireContractPacket?
+    var settlementCompletedAt: Date?
+    var utilitiesTransferCompletedAt: Date?
+    var addressUpdateCompletedAt: Date?
+    var buyerFeedback: MarketplaceWirePostSaleFeedbackEntry?
+    var sellerFeedback: MarketplaceWirePostSaleFeedbackEntry?
+    var conciergeBookings: [MarketplaceWirePostSaleConciergeBooking]?
     var invites: [MarketplaceWireSaleWorkspaceInvite]
     var documents: [MarketplaceWireSaleDocument]
     var updates: [SaleUpdateMessage]
@@ -451,9 +888,16 @@ nonisolated struct MarketplaceWireSaleRecord: Codable, Sendable {
         conditions = offer.conditions
         createdAt = offer.createdAt
         status = offer.status
+        sellerRelationshipStatus = offer.sellerRelationshipStatus
         buyerLegalSelection = offer.buyerLegalSelection.map(MarketplaceWireLegalSelection.init)
         sellerLegalSelection = offer.sellerLegalSelection.map(MarketplaceWireLegalSelection.init)
         contractPacket = offer.contractPacket.map(MarketplaceWireContractPacket.init)
+        settlementCompletedAt = offer.settlementCompletedAt
+        utilitiesTransferCompletedAt = offer.utilitiesTransferCompletedAt
+        addressUpdateCompletedAt = offer.addressUpdateCompletedAt
+        buyerFeedback = offer.buyerFeedback.map(MarketplaceWirePostSaleFeedbackEntry.init)
+        sellerFeedback = offer.sellerFeedback.map(MarketplaceWirePostSaleFeedbackEntry.init)
+        conciergeBookings = offer.conciergeBookings.map(MarketplaceWirePostSaleConciergeBooking.init)
         invites = offer.invites.map(MarketplaceWireSaleWorkspaceInvite.init)
         documents = offer.documents.map(MarketplaceWireSaleDocument.init)
         updates = offer.updates
@@ -469,9 +913,16 @@ nonisolated struct MarketplaceWireSaleRecord: Codable, Sendable {
             conditions: conditions,
             createdAt: createdAt,
             status: status,
+            sellerRelationshipStatus: sellerRelationshipStatus,
             buyerLegalSelection: buyerLegalSelection?.toAppModel(),
             sellerLegalSelection: sellerLegalSelection?.toAppModel(),
             contractPacket: contractPacket?.toAppModel(),
+            settlementCompletedAt: settlementCompletedAt,
+            utilitiesTransferCompletedAt: utilitiesTransferCompletedAt,
+            addressUpdateCompletedAt: addressUpdateCompletedAt,
+            buyerFeedback: buyerFeedback?.toAppModel(),
+            sellerFeedback: sellerFeedback?.toAppModel(),
+            conciergeBookings: conciergeBookings?.map { $0.toAppModel() } ?? [],
             invites: invites.map { $0.toAppModel() },
             documents: documents.map { $0.toAppModel() },
             updates: updates
@@ -489,6 +940,10 @@ private nonisolated struct MarketplaceWireConversationListEnvelope: Codable, Sen
 
 private nonisolated struct MarketplaceWireLegalProfessionalEnvelope: Codable, Sendable {
     var professionals: [MarketplaceWireLegalProfessional]
+}
+
+private nonisolated struct MarketplaceWirePostSaleConciergeEnvelope: Codable, Sendable {
+    var providers: [MarketplaceWirePostSaleConciergeProvider]
 }
 
 private nonisolated struct MarketplaceWireListingEnvelope: Codable, Sendable {
@@ -768,6 +1223,13 @@ protocol MarketplaceLegalProfessionalSearching: Sendable {
     nonisolated func searchProfessionals(near listing: PropertyListing) async throws -> [LegalProfessional]
 }
 
+protocol MarketplacePostSaleConciergeSearching: Sendable {
+    nonisolated func searchProviders(
+        near listing: PropertyListing,
+        serviceKind: PostSaleConciergeServiceKind
+    ) async throws -> [PostSaleConciergeProvider]
+}
+
 nonisolated struct LocalLegalProfessionalSearch: MarketplaceLegalProfessionalSearching, Sendable {
     private static let fallbackProfessionals: [LegalProfessional] = [
         LegalProfessional(
@@ -921,6 +1383,227 @@ nonisolated struct LocalLegalProfessionalSearch: MarketplaceLegalProfessionalSea
     }
 }
 
+nonisolated struct LocalPostSaleConciergeSearch: MarketplacePostSaleConciergeSearching, Sendable {
+    private static let fallbackProviders: [PostSaleConciergeProvider] = [
+        PostSaleConciergeProvider(
+            id: "local-brisbane-move-right",
+            serviceKind: .removalist,
+            name: "Move Right Brisbane",
+            specialties: ["House moves", "Packing", "Furniture assembly"],
+            address: "27 Montague Road, South Brisbane QLD 4101",
+            suburb: "South Brisbane",
+            phoneNumber: "(07) 3211 2044",
+            websiteURL: URL(string: "https://www.google.com/search?q=Move+Right+Brisbane+Removalists"),
+            mapsURL: URL(string: "https://maps.google.com/?q=27+Montague+Road+South+Brisbane+QLD+4101"),
+            latitude: -27.4734,
+            longitude: 153.0134,
+            rating: 4.8,
+            reviewCount: 88,
+            indicativePriceLow: 780,
+            indicativePriceHigh: 1_150,
+            estimatedResponseHours: 2,
+            source: .localFallback,
+            searchSummary: "Handles owner-seller moves, same-day truck support, and packing help after settlement."
+        ),
+        PostSaleConciergeProvider(
+            id: "local-river-city-removals",
+            serviceKind: .removalist,
+            name: "River City Removals",
+            specialties: ["Apartment moves", "Boxes supplied", "Local storage"],
+            address: "6 Longland Street, Newstead QLD 4006",
+            suburb: "Newstead",
+            phoneNumber: "(07) 3180 7721",
+            websiteURL: URL(string: "https://www.google.com/search?q=River+City+Removals+Brisbane"),
+            mapsURL: URL(string: "https://maps.google.com/?q=6+Longland+Street+Newstead+QLD+4006"),
+            latitude: -27.4506,
+            longitude: 153.0455,
+            rating: 4.7,
+            reviewCount: 61,
+            indicativePriceLow: 690,
+            indicativePriceHigh: 980,
+            estimatedResponseHours: 3,
+            source: .localFallback,
+            searchSummary: "Popular for inner-city townhouse and apartment moves with fast handover turnarounds."
+        ),
+        PostSaleConciergeProvider(
+            id: "local-handover-clean-co",
+            serviceKind: .cleaner,
+            name: "Handover Clean Co",
+            specialties: ["Exit clean", "Windows", "Carpet refresh"],
+            address: "14 Logan Road, Woolloongabba QLD 4102",
+            suburb: "Woolloongabba",
+            phoneNumber: "(07) 3559 1420",
+            websiteURL: URL(string: "https://www.google.com/search?q=Handover+Clean+Co+Brisbane"),
+            mapsURL: URL(string: "https://maps.google.com/?q=14+Logan+Road+Woolloongabba+QLD+4102"),
+            latitude: -27.4918,
+            longitude: 153.0352,
+            rating: 4.9,
+            reviewCount: 54,
+            indicativePriceLow: 320,
+            indicativePriceHigh: 520,
+            estimatedResponseHours: 4,
+            source: .localFallback,
+            searchSummary: "Specialises in pre-settlement touch-ups and final cleans for private-sale handovers."
+        ),
+        PostSaleConciergeProvider(
+            id: "local-settlement-sparkle",
+            serviceKind: .cleaner,
+            name: "Settlement Sparkle Services",
+            specialties: ["Move-in clean", "Bathrooms", "Outdoor sweep"],
+            address: "88 Oxford Street, Bulimba QLD 4171",
+            suburb: "Bulimba",
+            phoneNumber: "(07) 3395 6108",
+            websiteURL: URL(string: "https://www.google.com/search?q=Settlement+Sparkle+Services+Bulimba"),
+            mapsURL: URL(string: "https://maps.google.com/?q=88+Oxford+Street+Bulimba+QLD+4171"),
+            latitude: -27.4521,
+            longitude: 153.0574,
+            rating: 4.7,
+            reviewCount: 31,
+            indicativePriceLow: 260,
+            indicativePriceHigh: 430,
+            estimatedResponseHours: 6,
+            source: .localFallback,
+            searchSummary: "Good fit for fast occupancy changes where the buyer wants the property refreshed before move-in."
+        ),
+        PostSaleConciergeProvider(
+            id: "local-switch-on-connect",
+            serviceKind: .utilitiesConnection,
+            name: "Switch On Move Connect",
+            specialties: ["Electricity", "Gas", "Internet setup"],
+            address: "Level 3, 99 Creek Street, Brisbane City QLD 4000",
+            suburb: "Brisbane City",
+            phoneNumber: "(07) 3222 5400",
+            websiteURL: URL(string: "https://www.google.com/search?q=Switch+On+Move+Connect+Brisbane"),
+            mapsURL: URL(string: "https://maps.google.com/?q=99+Creek+Street+Brisbane+City+QLD+4000"),
+            latitude: -27.4662,
+            longitude: 153.0298,
+            rating: 4.6,
+            reviewCount: 45,
+            indicativePriceLow: 120,
+            indicativePriceHigh: 260,
+            estimatedResponseHours: 2,
+            source: .localFallback,
+            searchSummary: "Coordinates electricity, gas, and internet activation around settlement and move day."
+        ),
+        PostSaleConciergeProvider(
+            id: "local-meter-to-modem",
+            serviceKind: .utilitiesConnection,
+            name: "Meter to Modem Concierge",
+            specialties: ["Utility transfers", "NBN support", "Move-day checklist"],
+            address: "52 Thomas Drive, Chevron Island QLD 4217",
+            suburb: "Chevron Island",
+            phoneNumber: "(07) 5531 3309",
+            websiteURL: URL(string: "https://www.google.com/search?q=Meter+to+Modem+Concierge+QLD"),
+            mapsURL: URL(string: "https://maps.google.com/?q=52+Thomas+Drive+Chevron+Island+QLD+4217"),
+            latitude: -27.9982,
+            longitude: 153.4286,
+            rating: 4.5,
+            reviewCount: 24,
+            indicativePriceLow: 90,
+            indicativePriceHigh: 180,
+            estimatedResponseHours: 5,
+            source: .localFallback,
+            searchSummary: "Helpful for buyers who want utilities switched on before the first night in the property."
+        ),
+        PostSaleConciergeProvider(
+            id: "local-key-bridge-handover",
+            serviceKind: .keyHandover,
+            name: "KeyBridge Handover",
+            specialties: ["Key exchange", "Final walkthrough", "Remote inventory"],
+            address: "19 Breakfast Creek Road, Newstead QLD 4006",
+            suburb: "Newstead",
+            phoneNumber: "(07) 3077 4120",
+            websiteURL: URL(string: "https://www.google.com/search?q=KeyBridge+Handover+Brisbane"),
+            mapsURL: URL(string: "https://maps.google.com/?q=19+Breakfast+Creek+Road+Newstead+QLD+4006"),
+            latitude: -27.4424,
+            longitude: 153.0435,
+            rating: 4.8,
+            reviewCount: 19,
+            indicativePriceLow: 140,
+            indicativePriceHigh: 260,
+            estimatedResponseHours: 3,
+            source: .localFallback,
+            searchSummary: "Schedules key swaps, garage remote handover, and a short final property walk-through."
+        ),
+        PostSaleConciergeProvider(
+            id: "local-settle-and-keys",
+            serviceKind: .keyHandover,
+            name: "Settle & Keys",
+            specialties: ["Access packs", "Lockbox support", "Buyer-seller meetup"],
+            address: "4 Wembley Road, Logan Central QLD 4114",
+            suburb: "Logan Central",
+            phoneNumber: "(07) 3299 8804",
+            websiteURL: URL(string: "https://www.google.com/search?q=Settle+and+Keys+Logan+QLD"),
+            mapsURL: URL(string: "https://maps.google.com/?q=4+Wembley+Road+Logan+Central+QLD+4114"),
+            latitude: -27.6398,
+            longitude: 153.1096,
+            rating: 4.6,
+            reviewCount: 22,
+            indicativePriceLow: 110,
+            indicativePriceHigh: 220,
+            estimatedResponseHours: 5,
+            source: .localFallback,
+            searchSummary: "Useful for private sellers who want a neutral key and handover coordinator on settlement day."
+        )
+    ]
+
+    nonisolated func searchProviders(
+        near listing: PropertyListing,
+        serviceKind: PostSaleConciergeServiceKind
+    ) async throws -> [PostSaleConciergeProvider] {
+        let normalizedSuburb = listing.address.suburb.lowercased()
+
+        return Self.fallbackProviders
+            .filter { $0.serviceKind == serviceKind }
+            .map { provider in
+                (
+                    provider: provider,
+                    distanceKm: Self.distanceInKm(
+                        latitudeA: listing.latitude,
+                        longitudeA: listing.longitude,
+                        latitudeB: provider.latitude,
+                        longitudeB: provider.longitude
+                    )
+                )
+            }
+            .filter { item in
+                item.distanceKm <= 120 || item.provider.suburb.lowercased().contains(normalizedSuburb)
+            }
+            .sorted { left, right in
+                if left.distanceKm == right.distanceKm {
+                    return (left.provider.rating ?? 0) > (right.provider.rating ?? 0)
+                }
+
+                return left.distanceKm < right.distanceKm
+            }
+            .prefix(6)
+            .map { item in
+                var provider = item.provider
+                provider.searchSummary = "\(provider.searchSummary) Approx. \(item.distanceKm.formatted(.number.precision(.fractionLength(1)))) km from the property."
+                return provider
+            }
+    }
+
+    private static func distanceInKm(
+        latitudeA: Double,
+        longitudeA: Double,
+        latitudeB: Double,
+        longitudeB: Double
+    ) -> Double {
+        let earthRadiusKm = 6_371.0
+        let deltaLatitude = (latitudeB - latitudeA) * .pi / 180
+        let deltaLongitude = (longitudeB - longitudeA) * .pi / 180
+        let startLatitude = latitudeA * .pi / 180
+        let endLatitude = latitudeB * .pi / 180
+
+        let a = sin(deltaLatitude / 2) * sin(deltaLatitude / 2) +
+            cos(startLatitude) * cos(endLatitude) *
+            sin(deltaLongitude / 2) * sin(deltaLongitude / 2)
+
+        return earthRadiusKm * 2 * atan2(sqrt(a), sqrt(1 - a))
+    }
+}
+
 nonisolated struct RemoteLegalProfessionalSearch: MarketplaceLegalProfessionalSearching, Sendable {
     let client: MarketplaceHTTPClient
 
@@ -936,6 +1619,53 @@ nonisolated struct RemoteLegalProfessionalSearch: MarketplaceLegalProfessionalSe
             ]
         )
         return response.professionals.map { $0.toAppModel() }
+    }
+}
+
+nonisolated struct RemotePostSaleConciergeSearch: MarketplacePostSaleConciergeSearching, Sendable {
+    let client: MarketplaceHTTPClient
+
+    nonisolated func searchProviders(
+        near listing: PropertyListing,
+        serviceKind: PostSaleConciergeServiceKind
+    ) async throws -> [PostSaleConciergeProvider] {
+        let response: MarketplaceWirePostSaleConciergeEnvelope = try await client.get(
+            path: "v1/post-sale-concierge/search",
+            queryItems: [
+                URLQueryItem(name: "kind", value: serviceKind.rawValue),
+                URLQueryItem(name: "lat", value: String(listing.latitude)),
+                URLQueryItem(name: "lng", value: String(listing.longitude)),
+                URLQueryItem(name: "suburb", value: listing.address.suburb),
+                URLQueryItem(name: "state", value: listing.address.state),
+                URLQueryItem(name: "postcode", value: listing.address.postcode)
+            ]
+        )
+        return response.providers.map { $0.toAppModel() }
+    }
+}
+
+nonisolated struct FallbackPostSaleConciergeSearch: MarketplacePostSaleConciergeSearching, Sendable {
+    let remote: RemotePostSaleConciergeSearch
+    let local: LocalPostSaleConciergeSearch
+    let configuration: MarketplaceBackendConfiguration
+
+    nonisolated func searchProviders(
+        near listing: PropertyListing,
+        serviceKind: PostSaleConciergeServiceKind
+    ) async throws -> [PostSaleConciergeProvider] {
+        guard configuration.mode == .remotePreferred else {
+            return try await local.searchProviders(near: listing, serviceKind: serviceKind)
+        }
+
+        do {
+            let remoteResults = try await remote.searchProviders(near: listing, serviceKind: serviceKind)
+            if remoteResults.isEmpty {
+                return try await local.searchProviders(near: listing, serviceKind: serviceKind)
+            }
+            return remoteResults
+        } catch let error as MarketplaceHTTPError where error.canFallbackToLocal {
+            return try await local.searchProviders(near: listing, serviceKind: serviceKind)
+        }
     }
 }
 
@@ -1143,6 +1873,7 @@ nonisolated struct MarketplaceLiveServices: Sendable {
     var userStateSync: any MarketplaceUserStateSyncing
     var taskSnapshotStateSync: any MarketplaceTaskSnapshotStateSyncing
     var legalProfessionalSearch: any MarketplaceLegalProfessionalSearching
+    var postSaleConciergeSearch: any MarketplacePostSaleConciergeSearching
     var saleSync: any MarketplaceSaleSyncing
     var configuration: MarketplaceBackendConfiguration
 }
@@ -1160,6 +1891,7 @@ nonisolated enum MarketplaceServiceFactory {
                 userStateSync: DisabledUserStateSync(),
                 taskSnapshotStateSync: DisabledTaskSnapshotStateSync(),
                 legalProfessionalSearch: LocalLegalProfessionalSearch(),
+                postSaleConciergeSearch: LocalPostSaleConciergeSearch(),
                 saleSync: DisabledSaleSync(),
                 configuration: configuration
             )
@@ -1179,6 +1911,11 @@ nonisolated enum MarketplaceServiceFactory {
             legalProfessionalSearch: FallbackLegalProfessionalSearch(
                 remote: RemoteLegalProfessionalSearch(client: client),
                 local: LocalLegalProfessionalSearch(),
+                configuration: configuration
+            ),
+            postSaleConciergeSearch: FallbackPostSaleConciergeSearch(
+                remote: RemotePostSaleConciergeSearch(client: client),
+                local: LocalPostSaleConciergeSearch(),
                 configuration: configuration
             ),
             saleSync: RemoteSaleSync(client: client),

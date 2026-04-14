@@ -13,7 +13,6 @@ struct Real_O_WhoApp: App {
     @StateObject private var messaging: EncryptedMessagingService
     @StateObject private var taskSnapshots: SaleTaskSnapshotSyncStore
     @StateObject private var reminders = SaleReminderService()
-    @AppStorage("realowho.hasCompletedWelcome") private var hasCompletedWelcome = false
 
     init() {
         let launchConfiguration = AppLaunchConfiguration.shared
@@ -35,6 +34,7 @@ struct Real_O_WhoApp: App {
                 listingSync: services.listingSync,
                 userStateSync: services.userStateSync,
                 legalProfessionalSearch: services.legalProfessionalSearch,
+                postSaleConciergeSearch: services.postSaleConciergeSearch,
                 saleSync: services.saleSync,
                 storageModeSummary: storageModeSummary,
                 backendEndpointSummary: backendEndpointSummary,
@@ -59,15 +59,7 @@ struct Real_O_WhoApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if shouldShowWelcome {
-                    LaunchWelcomeView(onComplete: {
-                        hasCompletedWelcome = true
-                    })
-                        .environmentObject(store)
-                        .environmentObject(messaging)
-                        .environmentObject(taskSnapshots)
-                        .environmentObject(reminders)
-                } else if store.legalWorkspaceSession != nil {
+                if store.legalWorkspaceSession != nil {
                     LegalWorkspaceView()
                 } else {
                     ContentView()
@@ -77,17 +69,9 @@ struct Real_O_WhoApp: App {
                 .environmentObject(messaging)
                 .environmentObject(taskSnapshots)
                 .environmentObject(reminders)
-                .onAppear {
-                    if AppLaunchConfiguration.shared.isScreenshotMode {
-                        hasCompletedWelcome = true
-                    }
-                }
                 .onOpenURL { url in
                     Task {
                         await store.handleLegalWorkspaceDeepLink(url)
-                        if store.legalWorkspaceSession != nil {
-                            hasCompletedWelcome = true
-                        }
                     }
                 }
                 .task(id: taskSnapshotRefreshKey) {
@@ -121,14 +105,6 @@ struct Real_O_WhoApp: App {
         }
     }
 
-    private var shouldShowWelcome: Bool {
-        if AppLaunchConfiguration.shared.isScreenshotMode {
-            return false
-        }
-
-        return !hasCompletedWelcome
-    }
-
     @MainActor
     private func processQuickReminderCompletion(
         _ request: SaleReminderQuickCompletionRequest
@@ -136,6 +112,37 @@ struct Real_O_WhoApp: App {
         if store.offer(id: request.target.offerID) == nil {
             await store.handleSaleReminderTarget(request.target)
             store.consumeInboundSaleReminderTarget()
+        }
+
+        if let serviceKind = request.target.conciergeServiceKind {
+            guard let outcome = store.logPostSaleConciergeFollowUp(
+                offerID: request.target.offerID,
+                userID: store.currentUserID,
+                serviceKind: serviceKind,
+                note: "Logged from notification"
+            ),
+            let listing = store.listing(id: outcome.offer.listingID),
+            let buyer = store.user(id: outcome.offer.buyerID),
+            let seller = store.user(id: outcome.offer.sellerID) else {
+                return nil
+            }
+
+            let sender = store.currentUserID == buyer.id ? buyer : seller
+            let recipient = sender.id == buyer.id ? seller : buyer
+            messaging.sendMessage(
+                listing: listing,
+                from: sender,
+                to: recipient,
+                body: outcome.threadMessage,
+                isSystem: true,
+                saleTaskTarget: request.target
+            )
+            return reminderCompletionFeedback(
+                for: request.target,
+                activityTitle: request.activityTitle,
+                offer: outcome.offer,
+                currentUser: sender
+            )
         }
 
         guard let outcome = store.recordReminderTimelineActivity(
@@ -175,6 +182,37 @@ struct Real_O_WhoApp: App {
         if store.offer(id: request.target.offerID) == nil {
             await store.handleSaleReminderTarget(request.target)
             store.consumeInboundSaleReminderTarget()
+        }
+
+        if let serviceKind = request.target.conciergeServiceKind {
+            guard let outcome = store.snoozePostSaleConciergeFollowUp(
+                offerID: request.target.offerID,
+                userID: store.currentUserID,
+                serviceKind: serviceKind,
+                until: request.snoozedUntil
+            ),
+            let listing = store.listing(id: outcome.offer.listingID),
+            let buyer = store.user(id: outcome.offer.buyerID),
+            let seller = store.user(id: outcome.offer.sellerID) else {
+                return nil
+            }
+
+            let sender = store.currentUserID == buyer.id ? buyer : seller
+            let recipient = sender.id == buyer.id ? seller : buyer
+            messaging.sendMessage(
+                listing: listing,
+                from: sender,
+                to: recipient,
+                body: outcome.threadMessage,
+                isSystem: true,
+                saleTaskTarget: request.target
+            )
+            return reminderSnoozeFeedback(
+                for: request.target,
+                snoozedUntil: request.snoozedUntil,
+                offer: outcome.offer,
+                currentUser: sender
+            )
         }
 
         guard let outcome = store.recordReminderTimelineActivity(
@@ -219,6 +257,13 @@ struct Real_O_WhoApp: App {
         )
         let viewerParty = viewerIsBuyer ? "Buyer" : "Seller"
         let counterpartParty = viewerIsBuyer ? "Seller" : "Buyer"
+
+        if let conciergeServiceKind = target.conciergeServiceKind {
+            return SaleReminderActionFeedback(
+                title: "\(conciergeServiceKind.title) provider follow-up logged",
+                body: "\(conciergeServiceKind.title) provider progress is now visible in the post-sale archive and secure messages."
+            )
+        }
 
         switch target.checklistItemID {
         case "buyer-representative":
@@ -354,6 +399,13 @@ struct Real_O_WhoApp: App {
         currentUser: UserProfile
     ) -> SaleReminderActionFeedback {
         let untilSummary = snoozedUntil.formatted(date: .abbreviated, time: .shortened)
+
+        if let conciergeServiceKind = target.conciergeServiceKind {
+            return SaleReminderActionFeedback(
+                title: "\(conciergeServiceKind.title) provider follow-up snoozed",
+                body: "Snoozed until \(untilSummary). This provider reminder remains visible in the post-sale archive and secure messages."
+            )
+        }
 
         let title: String
         switch target.checklistItemID {
@@ -507,12 +559,49 @@ struct Real_O_WhoApp: App {
             }
             .joined(separator: "^")
 
-            return "\(offer.id.uuidString)#\(Int(offer.createdAt.timeIntervalSince1970))#\(checklistValue)"
+            let conciergeValue = conciergeReminderFingerprint(for: offer)
+
+            return "\(offer.id.uuidString)#\(Int(offer.createdAt.timeIntervalSince1970))#\(checklistValue)#\(conciergeValue)"
         }
         .joined(separator: "|")
 
         let snapshotFingerprint = taskSnapshots.notificationFingerprint(for: trackedTaskSnapshotViewerIDs)
-        return "\(store.currentUserID.uuidString)|\(offerValue)|\(snapshotFingerprint)"
+        let reminderMode = store.currentUser.conciergeReminderIntensity.rawValue
+        return "\(store.currentUserID.uuidString)|\(reminderMode)|\(offerValue)|\(snapshotFingerprint)"
+    }
+
+    private func conciergeReminderFingerprint(for offer: OfferRecord) -> String {
+        offer.conciergeBookings
+            .sorted { left, right in
+                left.serviceKind.rawValue < right.serviceKind.rawValue
+            }
+            .map(conciergeReminderFingerprint(for:))
+            .joined(separator: "^")
+    }
+
+    private func conciergeReminderFingerprint(for booking: PostSaleConciergeBooking) -> String {
+        let responseDueValue = booking.responseDueAt.map(epochSummary(for:)) ?? "none"
+        let snoozeValue = booking.reminderSnoozedUntil.map(epochSummary(for:)) ?? "none"
+        let confirmationValue = booking.providerConfirmedAt.map(epochSummary(for:)) ?? "none"
+        let followUpValue = booking.lastFollowUpAt.map(epochSummary(for:)) ?? "none"
+
+        return [
+            booking.serviceKind.rawValue,
+            booking.provider.id,
+            booking.provider.name,
+            booking.status.rawValue,
+            epochSummary(for: booking.scheduledFor),
+            responseDueValue,
+            snoozeValue,
+            confirmationValue,
+            followUpValue,
+            String(booking.followUpCountValue)
+        ]
+        .joined(separator: "~")
+    }
+
+    private func epochSummary(for date: Date) -> String {
+        String(Int(date.timeIntervalSince1970))
     }
 
     private var activeTaskSnapshotViewerID: String? {

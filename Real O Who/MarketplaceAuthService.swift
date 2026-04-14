@@ -110,7 +110,8 @@ nonisolated struct LocalMarketplaceAuthService: MarketplaceAuthServing, Sendable
             verificationNote: registration.role == .seller
                 ? "Private seller account created on this device"
                 : "Buyer account created on this device",
-            buyerStage: registration.role == .buyer ? .browsing : nil
+            buyerStage: registration.role == .buyer ? .browsing : nil,
+            verificationChecks: UserProfile.starterVerificationChecks(for: registration.role)
         )
 
         let salt = Data((0..<16).map { _ in UInt8.random(in: 0...255) })

@@ -32,14 +32,7 @@ struct LegalWorkspaceView: View {
                 }
             }
             .background(
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.95, green: 0.98, blue: 1.0),
-                        Color(red: 0.98, green: 0.99, blue: 1.0)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
+                AppTheme.pageBackground
                 .ignoresSafeArea()
             )
             .navigationTitle("Legal Workspace")
@@ -264,7 +257,7 @@ struct LegalWorkspaceView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color.white)
+                        .fill(AppTheme.cardBackground)
                 )
             }
         }
@@ -328,7 +321,7 @@ struct LegalWorkspaceView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color.white)
+                        .fill(AppTheme.cardBackground)
                 )
             }
         }
@@ -355,7 +348,7 @@ struct LegalWorkspaceView: View {
 
     private var workspacePanel: some View {
         RoundedRectangle(cornerRadius: 24, style: .continuous)
-            .fill(Color(red: 0.98, green: 0.99, blue: 1.0))
+            .fill(AppTheme.cardBackground)
     }
 
     private func legalTag(_ label: String) -> some View {
@@ -365,7 +358,7 @@ struct LegalWorkspaceView: View {
             .padding(.vertical, 7)
             .background(
                 Capsule()
-                    .fill(Color.white.opacity(0.16))
+                    .fill(AppTheme.pillBackground.opacity(0.8))
             )
             .foregroundStyle(.white)
     }

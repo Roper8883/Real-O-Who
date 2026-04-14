@@ -89,6 +89,25 @@ nonisolated enum OfferStatus: String, CaseIterable, Codable, Identifiable, Senda
     }
 }
 
+nonisolated enum SellerBuyerRelationshipStatus: String, CaseIterable, Codable, Identifiable, Sendable {
+    case watching
+    case shortlisted
+    case preferred
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .watching:
+            return "Watching"
+        case .shortlisted:
+            return "Shortlisted"
+        case .preferred:
+            return "Preferred buyer"
+        }
+    }
+}
+
 nonisolated enum SellerOfferAction: String, CaseIterable, Identifiable, Sendable {
     case accept
     case requestChanges
@@ -147,6 +166,190 @@ nonisolated enum BuyerStage: String, Codable, Sendable {
     }
 }
 
+nonisolated enum VerificationCheckStatus: String, Codable, Hashable, Sendable {
+    case pending
+    case verified
+
+    var title: String {
+        switch self {
+        case .pending:
+            return "Pending"
+        case .verified:
+            return "Verified"
+        }
+    }
+}
+
+nonisolated enum VerificationCheckKind: String, Codable, CaseIterable, Hashable, Sendable {
+    case identity
+    case mobile
+    case finance
+    case ownership
+    case legal
+
+    var title: String {
+        switch self {
+        case .identity:
+            return "Identity"
+        case .mobile:
+            return "Mobile"
+        case .finance:
+            return "Finance"
+        case .ownership:
+            return "Ownership"
+        case .legal:
+            return "Legal"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .identity:
+            return "ID"
+        case .mobile:
+            return "Mobile"
+        case .finance:
+            return "Finance"
+        case .ownership:
+            return "Owner"
+        case .legal:
+            return "Legal"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .identity:
+            return "person.text.rectangle.fill"
+        case .mobile:
+            return "iphone.gen3"
+        case .finance:
+            return "dollarsign.circle.fill"
+        case .ownership:
+            return "house.badge.checkmark.fill"
+        case .legal:
+            return "doc.text.fill"
+        }
+    }
+
+    var requiresDocumentUpload: Bool {
+        switch self {
+        case .finance, .ownership:
+            return true
+        case .identity, .mobile, .legal:
+            return false
+        }
+    }
+}
+
+nonisolated struct UserVerificationCheck: Identifiable, Codable, Hashable, Sendable {
+    var kind: VerificationCheckKind
+    var status: VerificationCheckStatus
+    var detail: String
+    var verifiedAt: Date?
+    var evidenceFileName: String?
+    var evidenceMimeType: String?
+    var evidenceAttachmentBase64: String?
+    var evidenceUploadedAt: Date?
+
+    var id: String { kind.rawValue }
+
+    var title: String { kind.title }
+    var shortTitle: String { kind.shortTitle }
+    var symbolName: String { kind.symbolName }
+    var hasEvidenceDocument: Bool { evidenceAttachmentBase64?.isEmpty == false }
+
+    static func verified(
+        _ kind: VerificationCheckKind,
+        detail: String,
+        verifiedAt: Date? = nil,
+        evidenceFileName: String? = nil,
+        evidenceMimeType: String? = nil,
+        evidenceAttachmentBase64: String? = nil,
+        evidenceUploadedAt: Date? = nil
+    ) -> Self {
+        Self(
+            kind: kind,
+            status: .verified,
+            detail: detail,
+            verifiedAt: verifiedAt,
+            evidenceFileName: evidenceFileName,
+            evidenceMimeType: evidenceMimeType,
+            evidenceAttachmentBase64: evidenceAttachmentBase64,
+            evidenceUploadedAt: evidenceUploadedAt
+        )
+    }
+
+    static func pending(
+        _ kind: VerificationCheckKind,
+        detail: String
+    ) -> Self {
+        Self(
+            kind: kind,
+            status: .pending,
+            detail: detail,
+            verifiedAt: nil,
+            evidenceFileName: nil,
+            evidenceMimeType: nil,
+            evidenceAttachmentBase64: nil,
+            evidenceUploadedAt: nil
+        )
+    }
+}
+
+nonisolated enum ConciergeReminderIntensity: String, CaseIterable, Codable, Identifiable, Hashable, Sendable {
+    case keyMoments
+    case balanced
+    case handsOn
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .keyMoments:
+            return "Key moments"
+        case .balanced:
+            return "Balanced"
+        case .handsOn:
+            return "Hands-on"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .keyMoments:
+            return "Key"
+        case .balanced:
+            return "Balanced"
+        case .handsOn:
+            return "Hands-on"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .keyMoments:
+            return "Only overdue provider follow-ups trigger concierge reminders, keeping the archive quieter until action is truly needed."
+        case .balanced:
+            return "Due-soon and overdue provider reply windows stay visible, with urgent follow-ups still clearly escalated."
+        case .handsOn:
+            return "Bring provider reply windows forward sooner and treat overdue concierge follow-ups as urgent across the archive and reminders."
+        }
+    }
+
+    var includesDueSoonNotifications: Bool {
+        self != .keyMoments
+    }
+
+    var showsDueSoonAttention: Bool {
+        self != .keyMoments
+    }
+
+    var escalatesOverdueAsUrgent: Bool {
+        self == .handsOn
+    }
+}
+
 nonisolated enum ListingPalette: String, Codable, Sendable {
     case ocean
     case sand
@@ -162,6 +365,76 @@ nonisolated struct UserProfile: Identifiable, Codable, Hashable, Sendable {
     var headline: String
     var verificationNote: String
     var buyerStage: BuyerStage?
+    var verificationChecks: [UserVerificationCheck]
+    var conciergeReminderIntensity: ConciergeReminderIntensity
+
+    init(
+        id: UUID,
+        name: String,
+        role: UserRole,
+        suburb: String,
+        headline: String,
+        verificationNote: String,
+        buyerStage: BuyerStage?,
+        verificationChecks: [UserVerificationCheck] = [],
+        conciergeReminderIntensity: ConciergeReminderIntensity = .balanced
+    ) {
+        self.id = id
+        self.name = name
+        self.role = role
+        self.suburb = suburb
+        self.headline = headline
+        self.verificationNote = verificationNote
+        self.buyerStage = buyerStage
+        self.verificationChecks = verificationChecks.isEmpty
+            ? Self.legacyVerificationChecks(for: role, verificationNote: verificationNote, buyerStage: buyerStage)
+            : verificationChecks
+        self.conciergeReminderIntensity = conciergeReminderIntensity
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case role
+        case suburb
+        case headline
+        case verificationNote
+        case buyerStage
+        case verificationChecks
+        case conciergeReminderIntensity
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        role = try container.decode(UserRole.self, forKey: .role)
+        suburb = try container.decode(String.self, forKey: .suburb)
+        headline = try container.decode(String.self, forKey: .headline)
+        verificationNote = try container.decode(String.self, forKey: .verificationNote)
+        buyerStage = try container.decodeIfPresent(BuyerStage.self, forKey: .buyerStage)
+        let decodedChecks = try container.decodeIfPresent([UserVerificationCheck].self, forKey: .verificationChecks) ?? []
+        verificationChecks = decodedChecks.isEmpty
+            ? Self.legacyVerificationChecks(for: role, verificationNote: verificationNote, buyerStage: buyerStage)
+            : decodedChecks
+        conciergeReminderIntensity = try container.decodeIfPresent(
+            ConciergeReminderIntensity.self,
+            forKey: .conciergeReminderIntensity
+        ) ?? .balanced
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(role, forKey: .role)
+        try container.encode(suburb, forKey: .suburb)
+        try container.encode(headline, forKey: .headline)
+        try container.encode(verificationNote, forKey: .verificationNote)
+        try container.encodeIfPresent(buyerStage, forKey: .buyerStage)
+        try container.encode(verificationChecks, forKey: .verificationChecks)
+        try container.encode(conciergeReminderIntensity, forKey: .conciergeReminderIntensity)
+    }
 
     var initials: String {
         name
@@ -170,6 +443,94 @@ nonisolated struct UserProfile: Identifiable, Codable, Hashable, Sendable {
             .compactMap { $0.first }
             .map(String.init)
             .joined()
+    }
+
+    var verifiedCheckCount: Int {
+        verificationChecks.filter { $0.status == .verified }.count
+    }
+
+    var pendingCheckCount: Int {
+        verificationChecks.filter { $0.status == .pending }.count
+    }
+
+    var trustScore: Int {
+        guard !verificationChecks.isEmpty else { return 0 }
+        return Int((Double(verifiedCheckCount) / Double(verificationChecks.count) * 100).rounded())
+    }
+
+    var highlightedVerificationChecks: [UserVerificationCheck] {
+        verificationChecks.sorted { left, right in
+            if left.status != right.status {
+                return left.status == .verified
+            }
+            return left.kind.title < right.kind.title
+        }
+    }
+
+    func hasVerifiedCheck(_ kind: VerificationCheckKind) -> Bool {
+        verificationChecks.contains { $0.kind == kind && $0.status == .verified }
+    }
+
+    func verificationCheck(for kind: VerificationCheckKind) -> UserVerificationCheck? {
+        verificationChecks.first { $0.kind == kind }
+    }
+
+    static func starterVerificationChecks(for role: UserRole) -> [UserVerificationCheck] {
+        switch role {
+        case .buyer:
+            return [
+                .pending(.identity, detail: "Photo ID review can be added before the contract is issued."),
+                .pending(.mobile, detail: "Mobile confirmation is still pending."),
+                .pending(.finance, detail: "Add pre-approval to help sellers see you can move quickly."),
+                .pending(.legal, detail: "Choose a conveyancer when you move from enquiry to contract.")
+            ]
+        case .seller:
+            return [
+                .pending(.identity, detail: "Identity review can be completed before contract issue."),
+                .pending(.mobile, detail: "Mobile confirmation is still pending."),
+                .pending(.ownership, detail: "Upload title or rates evidence to verify ownership."),
+                .pending(.legal, detail: "Choose a conveyancer or solicitor when an offer is accepted.")
+            ]
+        }
+    }
+
+    private static func legacyVerificationChecks(
+        for role: UserRole,
+        verificationNote: String,
+        buyerStage: BuyerStage?
+    ) -> [UserVerificationCheck] {
+        var checks = starterVerificationChecks(for: role)
+        let normalizedNote = verificationNote.lowercased()
+
+        func markVerified(
+            _ kind: VerificationCheckKind,
+            detail: String
+        ) {
+            guard let index = checks.firstIndex(where: { $0.kind == kind }) else { return }
+            checks[index] = .verified(kind, detail: detail)
+        }
+
+        if normalizedNote.contains("identity") {
+            markVerified(.identity, detail: "Identity has been reviewed for this local profile.")
+        }
+
+        if normalizedNote.contains("mobile") {
+            markVerified(.mobile, detail: "Mobile number has been confirmed.")
+        }
+
+        if normalizedNote.contains("finance") || buyerStage == .preApproved || buyerStage == .readyToOffer {
+            markVerified(.finance, detail: "Finance pre-approval is available to support an offer.")
+        }
+
+        if normalizedNote.contains("ownership") || normalizedNote.contains("owner") {
+            markVerified(.ownership, detail: "Ownership evidence has been reviewed for the property sale.")
+        }
+
+        if normalizedNote.contains("dashboard") {
+            markVerified(.legal, detail: "Deal-room and legal workflow access are ready for this seller.")
+        }
+
+        return checks
     }
 }
 
@@ -201,6 +562,13 @@ nonisolated struct ComparableSale: Identifiable, Codable, Hashable, Sendable {
     var soldPrice: Int
     var soldAt: Date
     var bedrooms: Int
+}
+
+nonisolated struct ListingPriceEvent: Identifiable, Codable, Hashable, Sendable {
+    let id: UUID
+    var amount: Int
+    var recordedAt: Date
+    var note: String
 }
 
 nonisolated struct SchoolInsight: Codable, Hashable, Sendable {
@@ -236,6 +604,7 @@ nonisolated struct PropertyListing: Identifiable, Codable, Hashable, Sendable {
     var inspectionSlots: [InspectionSlot]
     var marketPulse: MarketPulse
     var comparableSales: [ComparableSale]
+    var priceJourney: [ListingPriceEvent]
     var palette: ListingPalette
     var latitude: Double
     var longitude: Double
@@ -243,8 +612,183 @@ nonisolated struct PropertyListing: Identifiable, Codable, Hashable, Sendable {
     var publishedAt: Date
     var updatedAt: Date
 
+    init(
+        id: UUID,
+        title: String,
+        headline: String,
+        summary: String,
+        propertyType: PropertyType,
+        status: ListingStatus,
+        address: PropertyAddress,
+        askingPrice: Int,
+        bedrooms: Int,
+        bathrooms: Int,
+        parkingSpaces: Int,
+        landSizeText: String,
+        features: [String],
+        sellerID: UUID,
+        inspectionSlots: [InspectionSlot],
+        marketPulse: MarketPulse,
+        comparableSales: [ComparableSale],
+        priceJourney: [ListingPriceEvent] = [],
+        palette: ListingPalette,
+        latitude: Double,
+        longitude: Double,
+        isFeatured: Bool,
+        publishedAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.title = title
+        self.headline = headline
+        self.summary = summary
+        self.propertyType = propertyType
+        self.status = status
+        self.address = address
+        self.askingPrice = askingPrice
+        self.bedrooms = bedrooms
+        self.bathrooms = bathrooms
+        self.parkingSpaces = parkingSpaces
+        self.landSizeText = landSizeText
+        self.features = features
+        self.sellerID = sellerID
+        self.inspectionSlots = inspectionSlots
+        self.marketPulse = marketPulse
+        self.comparableSales = comparableSales
+        self.priceJourney = priceJourney.isEmpty
+            ? [
+                ListingPriceEvent(
+                    id: UUID(),
+                    amount: askingPrice,
+                    recordedAt: publishedAt,
+                    note: "Listed privately on Real O Who"
+                )
+            ]
+            : priceJourney.sorted { $0.recordedAt > $1.recordedAt }
+        self.palette = palette
+        self.latitude = latitude
+        self.longitude = longitude
+        self.isFeatured = isFeatured
+        self.publishedAt = publishedAt
+        self.updatedAt = updatedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case headline
+        case summary
+        case propertyType
+        case status
+        case address
+        case askingPrice
+        case bedrooms
+        case bathrooms
+        case parkingSpaces
+        case landSizeText
+        case features
+        case sellerID
+        case inspectionSlots
+        case marketPulse
+        case comparableSales
+        case priceJourney
+        case palette
+        case latitude
+        case longitude
+        case isFeatured
+        case publishedAt
+        case updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(UUID.self, forKey: .id)
+        let title = try container.decode(String.self, forKey: .title)
+        let headline = try container.decode(String.self, forKey: .headline)
+        let summary = try container.decode(String.self, forKey: .summary)
+        let propertyType = try container.decode(PropertyType.self, forKey: .propertyType)
+        let status = try container.decode(ListingStatus.self, forKey: .status)
+        let address = try container.decode(PropertyAddress.self, forKey: .address)
+        let askingPrice = try container.decode(Int.self, forKey: .askingPrice)
+        let bedrooms = try container.decode(Int.self, forKey: .bedrooms)
+        let bathrooms = try container.decode(Int.self, forKey: .bathrooms)
+        let parkingSpaces = try container.decode(Int.self, forKey: .parkingSpaces)
+        let landSizeText = try container.decode(String.self, forKey: .landSizeText)
+        let features = try container.decodeIfPresent([String].self, forKey: .features) ?? []
+        let sellerID = try container.decode(UUID.self, forKey: .sellerID)
+        let inspectionSlots = try container.decodeIfPresent([InspectionSlot].self, forKey: .inspectionSlots) ?? []
+        let marketPulse = try container.decode(MarketPulse.self, forKey: .marketPulse)
+        let comparableSales = try container.decodeIfPresent([ComparableSale].self, forKey: .comparableSales) ?? []
+        let priceJourney = try container.decodeIfPresent([ListingPriceEvent].self, forKey: .priceJourney) ?? []
+        let palette = try container.decode(ListingPalette.self, forKey: .palette)
+        let latitude = try container.decode(Double.self, forKey: .latitude)
+        let longitude = try container.decode(Double.self, forKey: .longitude)
+        let isFeatured = try container.decode(Bool.self, forKey: .isFeatured)
+        let publishedAt = try container.decode(Date.self, forKey: .publishedAt)
+        let updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+
+        self.init(
+            id: id,
+            title: title,
+            headline: headline,
+            summary: summary,
+            propertyType: propertyType,
+            status: status,
+            address: address,
+            askingPrice: askingPrice,
+            bedrooms: bedrooms,
+            bathrooms: bathrooms,
+            parkingSpaces: parkingSpaces,
+            landSizeText: landSizeText,
+            features: features,
+            sellerID: sellerID,
+            inspectionSlots: inspectionSlots,
+            marketPulse: marketPulse,
+            comparableSales: comparableSales,
+            priceJourney: priceJourney,
+            palette: palette,
+            latitude: latitude,
+            longitude: longitude,
+            isFeatured: isFeatured,
+            publishedAt: publishedAt,
+            updatedAt: updatedAt
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encode(headline, forKey: .headline)
+        try container.encode(summary, forKey: .summary)
+        try container.encode(propertyType, forKey: .propertyType)
+        try container.encode(status, forKey: .status)
+        try container.encode(address, forKey: .address)
+        try container.encode(askingPrice, forKey: .askingPrice)
+        try container.encode(bedrooms, forKey: .bedrooms)
+        try container.encode(bathrooms, forKey: .bathrooms)
+        try container.encode(parkingSpaces, forKey: .parkingSpaces)
+        try container.encode(landSizeText, forKey: .landSizeText)
+        try container.encode(features, forKey: .features)
+        try container.encode(sellerID, forKey: .sellerID)
+        try container.encode(inspectionSlots, forKey: .inspectionSlots)
+        try container.encode(marketPulse, forKey: .marketPulse)
+        try container.encode(comparableSales, forKey: .comparableSales)
+        try container.encode(priceJourney, forKey: .priceJourney)
+        try container.encode(palette, forKey: .palette)
+        try container.encode(latitude, forKey: .latitude)
+        try container.encode(longitude, forKey: .longitude)
+        try container.encode(isFeatured, forKey: .isFeatured)
+        try container.encode(publishedAt, forKey: .publishedAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+    }
+
     var primaryFactLine: String {
         "\(bedrooms) bed • \(bathrooms) bath • \(parkingSpaces) car"
+    }
+
+    var sortedPriceJourney: [ListingPriceEvent] {
+        priceJourney.sorted { $0.recordedAt > $1.recordedAt }
     }
 }
 
@@ -383,6 +927,384 @@ nonisolated struct LegalSelection: Codable, Hashable, Sendable {
     var userID: UUID
     var selectedAt: Date
     var professional: LegalProfessional
+}
+
+nonisolated enum PostSaleConciergeProviderSource: String, Codable, Hashable, Sendable {
+    case googlePlaces
+    case localFallback
+
+    var title: String {
+        switch self {
+        case .googlePlaces:
+            return "Google local listing"
+        case .localFallback:
+            return "Offline moving directory"
+        }
+    }
+}
+
+nonisolated enum PostSaleConciergeServiceKind: String, CaseIterable, Codable, Identifiable, Sendable {
+    case removalist
+    case cleaner
+    case utilitiesConnection
+    case keyHandover
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .removalist:
+            return "Removalist"
+        case .cleaner:
+            return "Cleaner"
+        case .utilitiesConnection:
+            return "Utilities connection"
+        case .keyHandover:
+            return "Key handover"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .removalist:
+            return "Book local movers for the main moving day once settlement is locked in."
+        case .cleaner:
+            return "Line up an end-of-sale clean or a pre-move-in refresh for the property."
+        case .utilitiesConnection:
+            return "Coordinate electricity, gas, internet, and water setup around the handover."
+        case .keyHandover:
+            return "Schedule the final key, remote, and handover pack exchange."
+        }
+    }
+
+    var completionTitle: String {
+        switch self {
+        case .removalist:
+            return "Removal completed"
+        case .cleaner:
+            return "Cleaning completed"
+        case .utilitiesConnection:
+            return "Utilities connected"
+        case .keyHandover:
+            return "Key handover completed"
+        }
+    }
+
+    var bookingTitle: String {
+        switch self {
+        case .removalist:
+            return "Removalist booked"
+        case .cleaner:
+            return "Cleaner booked"
+        case .utilitiesConnection:
+            return "Utilities support booked"
+        case .keyHandover:
+            return "Key handover booked"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .removalist:
+            return "truck.box.fill"
+        case .cleaner:
+            return "sparkles"
+        case .utilitiesConnection:
+            return "powerplug.fill"
+        case .keyHandover:
+            return "key.fill"
+        }
+    }
+
+    var specialties: [String] {
+        switch self {
+        case .removalist:
+            return ["House moves", "Packing", "Furniture setup"]
+        case .cleaner:
+            return ["Exit clean", "Bond clean", "Move-in refresh"]
+        case .utilitiesConnection:
+            return ["Electricity", "Gas", "Internet"]
+        case .keyHandover:
+            return ["Key exchange", "Access handover", "Final walkthrough"]
+        }
+    }
+}
+
+nonisolated struct PostSaleConciergeProvider: Identifiable, Codable, Hashable, Sendable {
+    let id: String
+    var serviceKind: PostSaleConciergeServiceKind
+    var name: String
+    var specialties: [String]
+    var address: String
+    var suburb: String
+    var phoneNumber: String?
+    var websiteURL: URL?
+    var mapsURL: URL?
+    var latitude: Double
+    var longitude: Double
+    var rating: Double?
+    var reviewCount: Int?
+    var indicativePriceLow: Int?
+    var indicativePriceHigh: Int?
+    var estimatedResponseHours: Int?
+    var source: PostSaleConciergeProviderSource
+    var searchSummary: String
+
+    var primarySpecialty: String {
+        specialties.first ?? serviceKind.title
+    }
+
+    var sourceLine: String {
+        "\(source.title) • \(suburb)"
+    }
+}
+
+nonisolated enum PostSaleConciergeBookingStatus: String, Codable, Hashable, Sendable {
+    case scheduled
+    case completed
+    case cancelled
+
+    var title: String {
+        switch self {
+        case .scheduled:
+            return "Scheduled"
+        case .completed:
+            return "Completed"
+        case .cancelled:
+            return "Cancelled"
+        }
+    }
+}
+
+nonisolated enum PostSaleConciergeIssueKind: String, Codable, CaseIterable, Hashable, Sendable {
+    case providerNoShow
+    case schedulingProblem
+    case billingProblem
+    case accessProblem
+    case serviceQuality
+    case other
+
+    var title: String {
+        switch self {
+        case .providerNoShow:
+            return "Provider no-show"
+        case .schedulingProblem:
+            return "Scheduling problem"
+        case .billingProblem:
+            return "Billing problem"
+        case .accessProblem:
+            return "Access problem"
+        case .serviceQuality:
+            return "Service quality"
+        case .other:
+            return "Other issue"
+        }
+    }
+}
+
+nonisolated struct PostSaleConciergeProviderAuditEntry: Identifiable, Codable, Hashable, Sendable {
+    let id: UUID
+    var provider: PostSaleConciergeProvider
+    var scheduledFor: Date
+    var notes: String
+    var replacedAt: Date
+    var replacedByUserID: UUID
+    var replacedByName: String
+    var estimatedCost: Int?
+    var quoteApprovedAt: Date?
+    var providerConfirmedAt: Date?
+    var providerConfirmationNote: String?
+    var reminderSnoozedUntil: Date?
+    var lastFollowUpAt: Date?
+    var lastFollowUpByName: String?
+    var followUpCount: Int?
+    var lastFollowUpNote: String?
+    var invoiceAmount: Int?
+    var paidAmount: Int?
+    var refundAmount: Int?
+    var issueKind: PostSaleConciergeIssueKind?
+    var issueNote: String?
+    var issueResolvedAt: Date?
+    var issueResolutionNote: String?
+    var hadInvoiceAttachment: Bool
+    var hadPaymentProof: Bool
+    var status: PostSaleConciergeBookingStatus
+    var completedAt: Date?
+    var cancelledAt: Date?
+    var cancellationReason: String?
+}
+
+nonisolated struct PostSaleConciergeBooking: Identifiable, Codable, Hashable, Sendable {
+    let id: UUID
+    var serviceKind: PostSaleConciergeServiceKind
+    var provider: PostSaleConciergeProvider
+    var scheduledFor: Date
+    var bookedAt: Date
+    var bookedByUserID: UUID
+    var bookedByName: String
+    var notes: String
+    var previousScheduledFor: Date?
+    var lastRescheduledAt: Date?
+    var lastRescheduledByUserID: UUID?
+    var lastRescheduledByName: String?
+    var rescheduleCount: Int?
+    var estimatedCost: Int?
+    var quoteApprovedAt: Date?
+    var quoteApprovedByUserID: UUID?
+    var quoteApprovedByName: String?
+    var providerConfirmedAt: Date?
+    var providerConfirmedByUserID: UUID?
+    var providerConfirmedByName: String?
+    var providerConfirmationNote: String?
+    var reminderSnoozedUntil: Date?
+    var lastFollowUpAt: Date?
+    var lastFollowUpByUserID: UUID?
+    var lastFollowUpByName: String?
+    var followUpCount: Int?
+    var lastFollowUpNote: String?
+    var invoiceAmount: Int?
+    var invoiceFileName: String?
+    var invoiceMimeType: String?
+    var invoiceAttachmentBase64: String?
+    var invoiceUploadedAt: Date?
+    var paidAmount: Int?
+    var paymentConfirmedAt: Date?
+    var paymentConfirmedByUserID: UUID?
+    var paymentConfirmedByName: String?
+    var paymentProofFileName: String?
+    var paymentProofMimeType: String?
+    var paymentProofAttachmentBase64: String?
+    var paymentProofUploadedAt: Date?
+    var cancelledAt: Date?
+    var cancelledByUserID: UUID?
+    var cancelledByName: String?
+    var cancellationReason: String?
+    var refundAmount: Int?
+    var refundProcessedAt: Date?
+    var refundProcessedByUserID: UUID?
+    var refundProcessedByName: String?
+    var refundNote: String?
+    var issueKind: PostSaleConciergeIssueKind?
+    var issueLoggedAt: Date?
+    var issueLoggedByUserID: UUID?
+    var issueLoggedByName: String?
+    var issueNote: String?
+    var issueResolvedAt: Date?
+    var issueResolvedByUserID: UUID?
+    var issueResolvedByName: String?
+    var issueResolutionNote: String?
+    var providerAuditHistory: [PostSaleConciergeProviderAuditEntry]?
+    var status: PostSaleConciergeBookingStatus
+    var completedAt: Date?
+
+    var isCompleted: Bool {
+        status == .completed || completedAt != nil
+    }
+
+    var isCancelled: Bool {
+        status == .cancelled || cancelledAt != nil
+    }
+
+    var isQuoteApproved: Bool {
+        quoteApprovedAt != nil
+    }
+
+    var isProviderConfirmed: Bool {
+        providerConfirmedAt != nil
+    }
+
+    var followUpCountValue: Int {
+        followUpCount ?? 0
+    }
+
+    var responseExpectationHoursValue: Int {
+        max(2, provider.estimatedResponseHours ?? 24)
+    }
+
+    var responseReferenceDate: Date {
+        lastRescheduledAt ?? bookedAt
+    }
+
+    var responseDueAt: Date? {
+        guard !isCancelled,
+              !isCompleted,
+              !isProviderConfirmed else {
+            return nil
+        }
+
+        return responseReferenceDate.addingTimeInterval(TimeInterval(responseExpectationHoursValue) * 60 * 60)
+    }
+
+    var isReminderSnoozed: Bool {
+        guard let reminderSnoozedUntil else {
+            return false
+        }
+
+        return reminderSnoozedUntil > .now
+    }
+
+    var isResponseDueSoon: Bool {
+        guard let responseDueAt,
+              !isReminderSnoozed else {
+            return false
+        }
+
+        let soonThreshold = Date().addingTimeInterval(60 * 60 * 6)
+        return responseDueAt > .now && responseDueAt <= soonThreshold
+    }
+
+    var needsResponseFollowUp: Bool {
+        guard let responseDueAt,
+              !isReminderSnoozed else {
+            return false
+        }
+
+        return responseDueAt <= .now
+    }
+
+    var hasInvoiceAttachment: Bool {
+        invoiceAttachmentBase64?.isEmpty == false
+    }
+
+    var isPaid: Bool {
+        paymentConfirmedAt != nil
+    }
+
+    var hasPaymentProof: Bool {
+        paymentProofAttachmentBase64?.isEmpty == false
+    }
+
+    var isRefunded: Bool {
+        refundProcessedAt != nil
+    }
+
+    var rescheduleCountValue: Int {
+        rescheduleCount ?? 0
+    }
+
+    var hasBeenRescheduled: Bool {
+        rescheduleCountValue > 0 || lastRescheduledAt != nil
+    }
+
+    var hasOpenIssue: Bool {
+        issueLoggedAt != nil && issueResolvedAt == nil
+    }
+
+    var hasResolvedIssue: Bool {
+        issueResolvedAt != nil
+    }
+
+    var providerHistoryCountValue: Int {
+        providerAuditHistory?.count ?? 0
+    }
+
+    var hasProviderHistory: Bool {
+        providerAuditHistory?.isEmpty == false
+    }
+
+    var latestProviderAuditEntry: PostSaleConciergeProviderAuditEntry? {
+        providerAuditHistory?.first
+    }
 }
 
 nonisolated struct ContractPacket: Identifiable, Codable, Hashable, Sendable {
@@ -578,8 +1500,12 @@ nonisolated enum SaleDocumentKind: String, Codable, Hashable, Sendable {
     case contractPacketPDF
     case councilRatesNoticePDF
     case identityCheckPackPDF
+    case buyerFinanceProofPDF
+    case sellerOwnershipEvidencePDF
     case signedContractPDF
     case settlementStatementPDF
+    case settlementSummaryPDF
+    case handoverChecklistPDF
     case reviewedContractPDF
     case settlementAdjustmentPDF
 
@@ -591,10 +1517,18 @@ nonisolated enum SaleDocumentKind: String, Codable, Hashable, Sendable {
             return "Council rates notice PDF"
         case .identityCheckPackPDF:
             return "Identity check pack PDF"
+        case .buyerFinanceProofPDF:
+            return "Buyer finance proof PDF"
+        case .sellerOwnershipEvidencePDF:
+            return "Seller ownership evidence PDF"
         case .signedContractPDF:
             return "Signed contract PDF"
         case .settlementStatementPDF:
             return "Settlement statement PDF"
+        case .settlementSummaryPDF:
+            return "Settlement summary PDF"
+        case .handoverChecklistPDF:
+            return "Handover checklist PDF"
         case .reviewedContractPDF:
             return "Reviewed contract PDF"
         case .settlementAdjustmentPDF:
@@ -610,10 +1544,18 @@ nonisolated enum SaleDocumentKind: String, Codable, Hashable, Sendable {
             return "building.columns.fill"
         case .identityCheckPackPDF:
             return "person.text.rectangle.fill"
+        case .buyerFinanceProofPDF:
+            return "dollarsign.circle.fill"
+        case .sellerOwnershipEvidencePDF:
+            return "house.badge.checkmark.fill"
         case .signedContractPDF:
             return "checkmark.seal.fill"
         case .settlementStatementPDF:
             return "banknote.fill"
+        case .settlementSummaryPDF:
+            return "doc.text.image.fill"
+        case .handoverChecklistPDF:
+            return "key.fill"
         case .reviewedContractPDF:
             return "doc.badge.gearshape.fill"
         case .settlementAdjustmentPDF:
@@ -813,9 +1755,16 @@ nonisolated struct OfferRecord: Identifiable, Codable, Hashable, Sendable {
     var conditions: String
     var createdAt: Date
     var status: OfferStatus
+    var sellerRelationshipStatus: SellerBuyerRelationshipStatus
     var buyerLegalSelection: LegalSelection?
     var sellerLegalSelection: LegalSelection?
     var contractPacket: ContractPacket?
+    var settlementCompletedAt: Date?
+    var utilitiesTransferCompletedAt: Date?
+    var addressUpdateCompletedAt: Date?
+    var buyerFeedback: PostSaleFeedbackEntry?
+    var sellerFeedback: PostSaleFeedbackEntry?
+    var conciergeBookings: [PostSaleConciergeBooking]
     var invites: [SaleWorkspaceInvite]
     var documents: [SaleDocument]
     var updates: [SaleUpdateMessage]
@@ -829,9 +1778,16 @@ nonisolated struct OfferRecord: Identifiable, Codable, Hashable, Sendable {
         conditions: String,
         createdAt: Date,
         status: OfferStatus,
+        sellerRelationshipStatus: SellerBuyerRelationshipStatus = .watching,
         buyerLegalSelection: LegalSelection? = nil,
         sellerLegalSelection: LegalSelection? = nil,
         contractPacket: ContractPacket? = nil,
+        settlementCompletedAt: Date? = nil,
+        utilitiesTransferCompletedAt: Date? = nil,
+        addressUpdateCompletedAt: Date? = nil,
+        buyerFeedback: PostSaleFeedbackEntry? = nil,
+        sellerFeedback: PostSaleFeedbackEntry? = nil,
+        conciergeBookings: [PostSaleConciergeBooking] = [],
         invites: [SaleWorkspaceInvite] = [],
         documents: [SaleDocument] = [],
         updates: [SaleUpdateMessage] = []
@@ -844,9 +1800,16 @@ nonisolated struct OfferRecord: Identifiable, Codable, Hashable, Sendable {
         self.conditions = conditions
         self.createdAt = createdAt
         self.status = status
+        self.sellerRelationshipStatus = sellerRelationshipStatus
         self.buyerLegalSelection = buyerLegalSelection
         self.sellerLegalSelection = sellerLegalSelection
         self.contractPacket = contractPacket
+        self.settlementCompletedAt = settlementCompletedAt
+        self.utilitiesTransferCompletedAt = utilitiesTransferCompletedAt
+        self.addressUpdateCompletedAt = addressUpdateCompletedAt
+        self.buyerFeedback = buyerFeedback
+        self.sellerFeedback = sellerFeedback
+        self.conciergeBookings = conciergeBookings
         self.invites = invites
         self.documents = documents
         self.updates = updates
@@ -861,9 +1824,16 @@ nonisolated struct OfferRecord: Identifiable, Codable, Hashable, Sendable {
         case conditions
         case createdAt
         case status
+        case sellerRelationshipStatus
         case buyerLegalSelection
         case sellerLegalSelection
         case contractPacket
+        case settlementCompletedAt
+        case utilitiesTransferCompletedAt
+        case addressUpdateCompletedAt
+        case buyerFeedback
+        case sellerFeedback
+        case conciergeBookings
         case invites
         case documents
         case updates
@@ -879,9 +1849,19 @@ nonisolated struct OfferRecord: Identifiable, Codable, Hashable, Sendable {
         conditions = try container.decode(String.self, forKey: .conditions)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         status = try container.decode(OfferStatus.self, forKey: .status)
+        sellerRelationshipStatus = try container.decodeIfPresent(
+            SellerBuyerRelationshipStatus.self,
+            forKey: .sellerRelationshipStatus
+        ) ?? .watching
         buyerLegalSelection = try container.decodeIfPresent(LegalSelection.self, forKey: .buyerLegalSelection)
         sellerLegalSelection = try container.decodeIfPresent(LegalSelection.self, forKey: .sellerLegalSelection)
         contractPacket = try container.decodeIfPresent(ContractPacket.self, forKey: .contractPacket)
+        settlementCompletedAt = try container.decodeIfPresent(Date.self, forKey: .settlementCompletedAt)
+        utilitiesTransferCompletedAt = try container.decodeIfPresent(Date.self, forKey: .utilitiesTransferCompletedAt)
+        addressUpdateCompletedAt = try container.decodeIfPresent(Date.self, forKey: .addressUpdateCompletedAt)
+        buyerFeedback = try container.decodeIfPresent(PostSaleFeedbackEntry.self, forKey: .buyerFeedback)
+        sellerFeedback = try container.decodeIfPresent(PostSaleFeedbackEntry.self, forKey: .sellerFeedback)
+        conciergeBookings = try container.decodeIfPresent([PostSaleConciergeBooking].self, forKey: .conciergeBookings) ?? []
         invites = try container.decodeIfPresent([SaleWorkspaceInvite].self, forKey: .invites) ?? []
         documents = try container.decodeIfPresent([SaleDocument].self, forKey: .documents) ?? []
         updates = try container.decodeIfPresent([SaleUpdateMessage].self, forKey: .updates) ?? []
@@ -916,6 +1896,10 @@ nonisolated struct OfferRecord: Identifiable, Codable, Hashable, Sendable {
             .max()
         let latestSignatureDate = [contractPacket?.buyerSignedAt, contractPacket?.sellerSignedAt]
             .compactMap { $0 }
+            .max()
+        let settlementStatementDate = documents
+            .filter { $0.kind == .settlementStatementPDF }
+            .map(\.createdAt)
             .max()
 
         let documentKinds = Set(documents.map(\.kind))
@@ -1114,6 +2098,40 @@ nonisolated struct OfferRecord: Identifiable, Codable, Hashable, Sendable {
                 status: hasSettlementStatement
                     ? .completed
                     : (contractPacket?.isFullySigned == true || hasSignedContract ? .inProgress : .pending)
+            ),
+            SaleChecklistItem(
+                id: "settlement-complete",
+                title: "Settlement completed",
+                detail: settlementCompletedAt.map {
+                    "Settlement confirmed \(Self.checklistDateString($0)). Funds, paperwork, and handover are now closed out."
+                } ?? (
+                    hasSettlementStatement
+                    ? "Settlement statement is ready. Confirm the final handover once funds and keys have been exchanged."
+                    : (contractPacket?.isFullySigned == true || hasSignedContract
+                        ? "Settlement closes after the settlement statement is prepared and the final handover is confirmed."
+                        : "Settlement completion unlocks after signing and settlement paperwork are complete.")
+                ),
+                ownerLabel: "Buyer and seller",
+                targetDate: (settlementStatementDate ?? latestSignatureDate ?? contractPacket?.generatedAt ?? createdAt)
+                    .addingTimeInterval(60 * 60 * 24 * 5),
+                nextAction: settlementCompletedAt == nil
+                    ? (hasSettlementStatement
+                        ? "Confirm settlement completion and final handover."
+                        : (contractPacket?.isFullySigned == true || hasSignedContract
+                            ? "Prepare and review the settlement statement before closing the file."
+                            : "Complete signatures and settlement paperwork before closing settlement."))
+                    : nil,
+                reminder: settlementCompletedAt == nil && hasSettlementStatement &&
+                    (settlementStatementDate ?? latestSignatureDate ?? contractPacket?.generatedAt ?? createdAt)
+                        .addingTimeInterval(60 * 60 * 24 * 5) < .now
+                    ? "Settlement still needs final confirmation. Close the file once funds and keys have been exchanged."
+                    : nil,
+                supporting: settlementCompletedAt == nil && hasSettlementStatement
+                    ? "Use the settlement statement and signed contract to confirm the deal is fully closed."
+                    : nil,
+                status: settlementCompletedAt != nil
+                    ? .completed
+                    : (hasSettlementStatement ? .inProgress : .pending)
             )
         ]
     }
@@ -1122,6 +2140,36 @@ nonisolated struct OfferRecord: Identifiable, Codable, Hashable, Sendable {
         invites
             .filter { $0.role == role }
             .sorted { $0.createdAt > $1.createdAt }
+            .first
+    }
+
+    func completedAt(for task: PostSaleServiceTaskKind) -> Date? {
+        switch task {
+        case .utilitiesTransfer:
+            return utilitiesTransferCompletedAt
+        case .addressUpdate:
+            return addressUpdateCompletedAt
+        }
+    }
+
+    func feedback(for role: UserRole) -> PostSaleFeedbackEntry? {
+        switch role {
+        case .buyer:
+            return buyerFeedback
+        case .seller:
+            return sellerFeedback
+        }
+    }
+
+    func conciergeBooking(for kind: PostSaleConciergeServiceKind) -> PostSaleConciergeBooking? {
+        conciergeBookings
+            .filter { $0.serviceKind == kind }
+            .sorted { left, right in
+                if left.bookedAt == right.bookedAt {
+                    return left.id.uuidString > right.id.uuidString
+                }
+                return left.bookedAt > right.bookedAt
+            }
             .first
     }
 
@@ -1243,6 +2291,66 @@ nonisolated struct OfferRecord: Identifiable, Codable, Hashable, Sendable {
             return nil
         }
     }
+}
+
+nonisolated enum PostSaleServiceTaskKind: String, CaseIterable, Codable, Identifiable, Sendable {
+    case utilitiesTransfer
+    case addressUpdate
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .utilitiesTransfer:
+            return "Utilities checklist"
+        case .addressUpdate:
+            return "Change of address"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .utilitiesTransfer:
+            return "Record utilities, meter reads, and service handover after settlement."
+        case .addressUpdate:
+            return "Record postal redirects and address updates once the move is underway."
+        }
+    }
+
+    var completionTitle: String {
+        switch self {
+        case .utilitiesTransfer:
+            return "Utilities checklist completed"
+        case .addressUpdate:
+            return "Change of address completed"
+        }
+    }
+
+    var completionSummary: String {
+        switch self {
+        case .utilitiesTransfer:
+            return "Utilities handover, meter reads, and service changes have been recorded for this settled deal."
+        case .addressUpdate:
+            return "Address updates and redirect actions have been recorded for this settled deal."
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .utilitiesTransfer:
+            return "bolt.fill"
+        case .addressUpdate:
+            return "mail.stack.fill"
+        }
+    }
+}
+
+nonisolated struct PostSaleFeedbackEntry: Codable, Hashable, Sendable {
+    var submittedAt: Date
+    var rating: Int
+    var notes: String
+    var submittedByUserID: UUID
+    var submittedByName: String
 }
 
 nonisolated enum SaleTaskLiveSnapshotTone: String, Hashable, Sendable {
@@ -1430,6 +2538,23 @@ extension OfferRecord {
             }
 
             return SaleTaskLiveSnapshot(summary: "Settlement waits for final signing", tone: .info)
+        case "settlement-complete":
+            if settlementCompletedAt != nil {
+                return SaleTaskLiveSnapshot(summary: "Deal fully settled and closed", tone: .success)
+            }
+
+            if hasSettlementStatement {
+                return SaleTaskLiveSnapshot(
+                    summary: withDeadlineState("Settlement still needs final confirmation", checklistItem: checklistItem, now: now),
+                    tone: checklistItem.isOverdue ? .warning : .info
+                )
+            }
+
+            if contractPacket?.isFullySigned == true || hasSignedContract {
+                return SaleTaskLiveSnapshot(summary: "Waiting for settlement statement before final close", tone: .info)
+            }
+
+            return SaleTaskLiveSnapshot(summary: "Settlement close unlocks after signing", tone: .info)
         default:
             return nil
         }
@@ -1568,7 +2693,13 @@ nonisolated enum MarketplaceSeed {
             suburb: "Paddington, QLD",
             headline: "Searching for a family home with flexible inspection times.",
             verificationNote: "Identity and mobile verified",
-            buyerStage: .readyToOffer
+            buyerStage: .readyToOffer,
+            verificationChecks: [
+                .verified(.identity, detail: "Photo ID has been reviewed for direct private-sale offers."),
+                .verified(.mobile, detail: "Mobile number confirmed for inspection and deal-room contact."),
+                .verified(.legal, detail: "Buyer is ready to choose conveyancing support when terms are agreed."),
+                .pending(.finance, detail: "Finance proof can still be uploaded to strengthen an offer.")
+            ]
         ),
         UserProfile(
             id: buyerNoahID,
@@ -1577,7 +2708,13 @@ nonisolated enum MarketplaceSeed {
             suburb: "New Farm, QLD",
             headline: "Focused on inner-city townhomes close to schools and cafes.",
             verificationNote: "Finance pre-approval uploaded",
-            buyerStage: .preApproved
+            buyerStage: .preApproved,
+            verificationChecks: [
+                .verified(.identity, detail: "Photo ID has been reviewed for contract readiness."),
+                .verified(.mobile, detail: "Mobile number is confirmed for direct seller contact."),
+                .verified(.finance, detail: "Finance pre-approval is uploaded and ready to share."),
+                .pending(.legal, detail: "Legal representative selection still happens once a sale is under offer.")
+            ]
         ),
         UserProfile(
             id: sellerAvaID,
@@ -1586,7 +2723,13 @@ nonisolated enum MarketplaceSeed {
             suburb: "Graceville, QLD",
             headline: "Private owner listing with direct buyer conversations.",
             verificationNote: "Ownership documents reviewed",
-            buyerStage: nil
+            buyerStage: nil,
+            verificationChecks: [
+                .verified(.identity, detail: "Seller identity has been reviewed for this local profile."),
+                .verified(.mobile, detail: "Mobile number confirmed for buyer contact and inspections."),
+                .verified(.ownership, detail: "Ownership documents reviewed against the property listing."),
+                .verified(.legal, detail: "Legal workflow is ready to issue documents once terms are accepted.")
+            ]
         ),
         UserProfile(
             id: sellerMasonID,
@@ -1595,7 +2738,13 @@ nonisolated enum MarketplaceSeed {
             suburb: "Wilston, QLD",
             headline: "Selling privately and managing inspections directly.",
             verificationNote: "Owner dashboard enabled",
-            buyerStage: nil
+            buyerStage: nil,
+            verificationChecks: [
+                .verified(.identity, detail: "Seller identity has been reviewed for secure messaging access."),
+                .verified(.mobile, detail: "Mobile number confirmed for offer follow-up."),
+                .pending(.ownership, detail: "Ownership evidence still needs to be attached before contract issue."),
+                .verified(.legal, detail: "Seller dashboard and deal-room workflow are already enabled.")
+            ]
         )
     ]
 
@@ -1677,6 +2826,26 @@ nonisolated enum MarketplaceSeed {
                         bedrooms: 4
                     )
                 ],
+                priceJourney: [
+                    ListingPriceEvent(
+                        id: UUID(uuidString: "DAA3A4D1-0FE6-4FD7-8A81-68D7E1974001") ?? UUID(),
+                        amount: 1595000,
+                        recordedAt: date(daysAgo: 0, hour: 7, minute: 10),
+                        note: "Price sharpened after second inspection weekend"
+                    ),
+                    ListingPriceEvent(
+                        id: UUID(uuidString: "DAA3A4D1-0FE6-4FD7-8A81-68D7E1974002") ?? UUID(),
+                        amount: 1610000,
+                        recordedAt: date(daysAgo: 1, hour: 17, minute: 45),
+                        note: "Owner updated the asking price to match recent comparable sales"
+                    ),
+                    ListingPriceEvent(
+                        id: UUID(uuidString: "DAA3A4D1-0FE6-4FD7-8A81-68D7E1974003") ?? UUID(),
+                        amount: 1630000,
+                        recordedAt: date(daysAgo: 2, hour: 8, minute: 30),
+                        note: "Listed privately on Real O Who"
+                    )
+                ],
                 palette: .ocean,
                 latitude: -27.5232,
                 longitude: 152.9817,
@@ -1746,6 +2915,26 @@ nonisolated enum MarketplaceSeed {
                         bedrooms: 3
                     )
                 ],
+                priceJourney: [
+                    ListingPriceEvent(
+                        id: UUID(uuidString: "DAA3A4D1-0FE6-4FD7-8A81-68D7E1974004") ?? UUID(),
+                        amount: 1125000,
+                        recordedAt: date(daysAgo: 0, hour: 6, minute: 45),
+                        note: "Current private-sale asking price"
+                    ),
+                    ListingPriceEvent(
+                        id: UUID(uuidString: "DAA3A4D1-0FE6-4FD7-8A81-68D7E1974005") ?? UUID(),
+                        amount: 1140000,
+                        recordedAt: date(daysAgo: 3, hour: 15, minute: 20),
+                        note: "Price adjusted after owner feedback from first round of enquiries"
+                    ),
+                    ListingPriceEvent(
+                        id: UUID(uuidString: "DAA3A4D1-0FE6-4FD7-8A81-68D7E1974006") ?? UUID(),
+                        amount: 1160000,
+                        recordedAt: date(daysAgo: 5, hour: 9, minute: 15),
+                        note: "Listed privately on Real O Who"
+                    )
+                ],
                 palette: .sand,
                 latitude: -27.4329,
                 longitude: 153.0151,
@@ -1808,6 +2997,26 @@ nonisolated enum MarketplaceSeed {
                         bedrooms: 5
                     )
                 ],
+                priceJourney: [
+                    ListingPriceEvent(
+                        id: UUID(uuidString: "DAA3A4D1-0FE6-4FD7-8A81-68D7E1974007") ?? UUID(),
+                        amount: 1895000,
+                        recordedAt: date(daysAgo: 1, hour: 14, minute: 10),
+                        note: "Price updated after acreage-tour demand review"
+                    ),
+                    ListingPriceEvent(
+                        id: UUID(uuidString: "DAA3A4D1-0FE6-4FD7-8A81-68D7E1974008") ?? UUID(),
+                        amount: 1910000,
+                        recordedAt: date(daysAgo: 4, hour: 13, minute: 0),
+                        note: "Owner aligned the guide with buyer feedback on secondary dwelling value"
+                    ),
+                    ListingPriceEvent(
+                        id: UUID(uuidString: "DAA3A4D1-0FE6-4FD7-8A81-68D7E1974009") ?? UUID(),
+                        amount: 1940000,
+                        recordedAt: date(daysAgo: 8, hour: 7, minute: 50),
+                        note: "Listed privately on Real O Who"
+                    )
+                ],
                 palette: .gumleaf,
                 latitude: -27.3696,
                 longitude: 152.8905,
@@ -1868,6 +3077,26 @@ nonisolated enum MarketplaceSeed {
                         soldPrice: 855000,
                         soldAt: date(daysAgo: 16, hour: 0, minute: 0),
                         bedrooms: 2
+                    )
+                ],
+                priceJourney: [
+                    ListingPriceEvent(
+                        id: UUID(uuidString: "DAA3A4D1-0FE6-4FD7-8A81-68D7E1974010") ?? UUID(),
+                        amount: 865000,
+                        recordedAt: date(daysAgo: 0, hour: 9, minute: 20),
+                        note: "Current private-sale asking price"
+                    ),
+                    ListingPriceEvent(
+                        id: UUID(uuidString: "DAA3A4D1-0FE6-4FD7-8A81-68D7E1974011") ?? UUID(),
+                        amount: 879000,
+                        recordedAt: date(daysAgo: 2, hour: 18, minute: 10),
+                        note: "Owner sharpened the guide after comparable apartment sales landed"
+                    ),
+                    ListingPriceEvent(
+                        id: UUID(uuidString: "DAA3A4D1-0FE6-4FD7-8A81-68D7E1974012") ?? UUID(),
+                        amount: 889000,
+                        recordedAt: date(daysAgo: 4, hour: 10, minute: 5),
+                        note: "Listed privately on Real O Who"
                     )
                 ],
                 palette: .dusk,

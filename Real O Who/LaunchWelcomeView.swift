@@ -30,15 +30,8 @@ struct LaunchWelcomeView: View {
             .padding(20)
         }
         .background(
-            LinearGradient(
-                colors: [
-                    Color(red: 0.94, green: 0.98, blue: 1.0),
-                    Color(red: 0.98, green: 0.99, blue: 1.0)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            AppTheme.pageBackground
+                .ignoresSafeArea()
         )
         .sheet(item: $authMode) { mode in
             AuthenticationView(
@@ -113,7 +106,7 @@ struct LaunchWelcomeView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
-                .background(.white)
+                .background(AppTheme.cardBackground)
                 .cornerRadius(20)
             }
             .buttonStyle(.plain)
@@ -147,7 +140,7 @@ struct LaunchWelcomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.white)
+                .fill(AppTheme.cardBackground)
         )
     }
 
