@@ -70,6 +70,7 @@ nonisolated struct MarketplaceWireUserProfile: Codable, Sendable {
     var buyerStage: BuyerStage?
     var verificationChecks: [UserVerificationCheck]
     var conciergeReminderIntensity: ConciergeReminderIntensity
+    var conciergeReplacementStrategy: ConciergeReplacementStrategy
 
     init(_ user: UserProfile) {
         id = user.id
@@ -81,6 +82,7 @@ nonisolated struct MarketplaceWireUserProfile: Codable, Sendable {
         buyerStage = user.buyerStage
         verificationChecks = user.verificationChecks
         conciergeReminderIntensity = user.conciergeReminderIntensity
+        conciergeReplacementStrategy = user.conciergeReplacementStrategy
     }
 
     enum CodingKeys: String, CodingKey {
@@ -93,6 +95,7 @@ nonisolated struct MarketplaceWireUserProfile: Codable, Sendable {
         case buyerStage
         case verificationChecks
         case conciergeReminderIntensity
+        case conciergeReplacementStrategy
     }
 
     init(from decoder: Decoder) throws {
@@ -109,6 +112,10 @@ nonisolated struct MarketplaceWireUserProfile: Codable, Sendable {
             ConciergeReminderIntensity.self,
             forKey: .conciergeReminderIntensity
         ) ?? .balanced
+        conciergeReplacementStrategy = try container.decodeIfPresent(
+            ConciergeReplacementStrategy.self,
+            forKey: .conciergeReplacementStrategy
+        ) ?? .smart
     }
 
     func encode(to encoder: Encoder) throws {
@@ -122,6 +129,7 @@ nonisolated struct MarketplaceWireUserProfile: Codable, Sendable {
         try container.encodeIfPresent(buyerStage, forKey: .buyerStage)
         try container.encode(verificationChecks, forKey: .verificationChecks)
         try container.encode(conciergeReminderIntensity, forKey: .conciergeReminderIntensity)
+        try container.encode(conciergeReplacementStrategy, forKey: .conciergeReplacementStrategy)
     }
 
     nonisolated func toAppModel() -> UserProfile {
@@ -134,7 +142,8 @@ nonisolated struct MarketplaceWireUserProfile: Codable, Sendable {
             verificationNote: verificationNote,
             buyerStage: buyerStage,
             verificationChecks: verificationChecks,
-            conciergeReminderIntensity: conciergeReminderIntensity
+            conciergeReminderIntensity: conciergeReminderIntensity,
+            conciergeReplacementStrategy: conciergeReplacementStrategy
         )
     }
 }

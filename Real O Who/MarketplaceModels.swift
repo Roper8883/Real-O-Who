@@ -350,6 +350,41 @@ nonisolated enum ConciergeReminderIntensity: String, CaseIterable, Codable, Iden
     }
 }
 
+nonisolated enum ConciergeReplacementStrategy: String, CaseIterable, Codable, Identifiable, Hashable, Sendable {
+    case smart
+    case fastestRecovery
+    case qualityFirst
+    case bestValue
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .smart:
+            return "Smart"
+        case .fastestRecovery:
+            return "Speed"
+        case .qualityFirst:
+            return "Quality"
+        case .bestValue:
+            return "Value"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .smart:
+            return "Auto-adjust the shortlist based on the issue at hand, balancing response speed, review quality, suburb fit, and price guide."
+        case .fastestRecovery:
+            return "Push faster responders and easier-to-reach providers to the top when recovery speed matters most."
+        case .qualityFirst:
+            return "Bias toward stronger-rated providers with deeper review history when reliability matters more than speed."
+        case .bestValue:
+            return "Promote lower starting guides without ignoring response time, direct contact options, or local quality."
+        }
+    }
+}
+
 nonisolated enum ListingPalette: String, Codable, Sendable {
     case ocean
     case sand
@@ -367,6 +402,7 @@ nonisolated struct UserProfile: Identifiable, Codable, Hashable, Sendable {
     var buyerStage: BuyerStage?
     var verificationChecks: [UserVerificationCheck]
     var conciergeReminderIntensity: ConciergeReminderIntensity
+    var conciergeReplacementStrategy: ConciergeReplacementStrategy
 
     init(
         id: UUID,
@@ -377,7 +413,8 @@ nonisolated struct UserProfile: Identifiable, Codable, Hashable, Sendable {
         verificationNote: String,
         buyerStage: BuyerStage?,
         verificationChecks: [UserVerificationCheck] = [],
-        conciergeReminderIntensity: ConciergeReminderIntensity = .balanced
+        conciergeReminderIntensity: ConciergeReminderIntensity = .balanced,
+        conciergeReplacementStrategy: ConciergeReplacementStrategy = .smart
     ) {
         self.id = id
         self.name = name
@@ -390,6 +427,7 @@ nonisolated struct UserProfile: Identifiable, Codable, Hashable, Sendable {
             ? Self.legacyVerificationChecks(for: role, verificationNote: verificationNote, buyerStage: buyerStage)
             : verificationChecks
         self.conciergeReminderIntensity = conciergeReminderIntensity
+        self.conciergeReplacementStrategy = conciergeReplacementStrategy
     }
 
     enum CodingKeys: String, CodingKey {
@@ -402,6 +440,7 @@ nonisolated struct UserProfile: Identifiable, Codable, Hashable, Sendable {
         case buyerStage
         case verificationChecks
         case conciergeReminderIntensity
+        case conciergeReplacementStrategy
     }
 
     init(from decoder: Decoder) throws {
@@ -421,6 +460,10 @@ nonisolated struct UserProfile: Identifiable, Codable, Hashable, Sendable {
             ConciergeReminderIntensity.self,
             forKey: .conciergeReminderIntensity
         ) ?? .balanced
+        conciergeReplacementStrategy = try container.decodeIfPresent(
+            ConciergeReplacementStrategy.self,
+            forKey: .conciergeReplacementStrategy
+        ) ?? .smart
     }
 
     func encode(to encoder: Encoder) throws {
@@ -434,6 +477,7 @@ nonisolated struct UserProfile: Identifiable, Codable, Hashable, Sendable {
         try container.encodeIfPresent(buyerStage, forKey: .buyerStage)
         try container.encode(verificationChecks, forKey: .verificationChecks)
         try container.encode(conciergeReminderIntensity, forKey: .conciergeReminderIntensity)
+        try container.encode(conciergeReplacementStrategy, forKey: .conciergeReplacementStrategy)
     }
 
     var initials: String {

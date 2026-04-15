@@ -354,6 +354,22 @@ final class MarketplaceStore: ObservableObject {
         persist()
     }
 
+    func updateConciergeReplacementStrategy(
+        userID: UUID,
+        strategy: ConciergeReplacementStrategy
+    ) {
+        guard let userIndex = users.firstIndex(where: { $0.id == userID }) else {
+            return
+        }
+
+        guard users[userIndex].conciergeReplacementStrategy != strategy else {
+            return
+        }
+
+        users[userIndex].conciergeReplacementStrategy = strategy
+        persist()
+    }
+
     func signIn(email: String, password: String) async throws {
         let session = try await authService.signIn(
             email: email,

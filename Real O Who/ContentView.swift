@@ -454,6 +454,7 @@ private struct BrowseView: View {
 private struct SavedView: View {
     @EnvironmentObject private var store: MarketplaceStore
     @EnvironmentObject private var messaging: EncryptedMessagingService
+    @Environment(\.openURL) private var openURL
 
     @Binding var selectedTab: AppTab
     @Binding var selectedListing: PropertyListing?
@@ -476,6 +477,12 @@ private struct SavedView: View {
     @State private var selectedAttentionItemIDs: Set<String> = []
     @State private var attentionSeverityFilter: ConciergeAttentionScopeFilter = .all
     @State private var attentionServiceFilter: ConciergeAttentionServiceFilter = .all
+    @State private var suggestedReplacementPreviews: [String: ConciergeReplacementSuggestion] = [:]
+    @State private var suggestedReplacementPreviewFingerprints: [String: String] = [:]
+    @State private var loadingSuggestedReplacementPreviewIDs: Set<String> = []
+    @State private var preparingSuggestedReplacementItemID: String?
+    @State private var isBatchReplacingAttentionItems = false
+    @State private var batchReplacementReviewContext: ConciergeBatchReplacementReviewContext?
 
     var body: some View {
         NavigationStack {
@@ -616,14 +623,45 @@ private struct SavedView: View {
                     items: context.fileURLs.map { $0 as Any }
                 ) { _ in }
             }
+            .sheet(item: $batchReplacementReviewContext) { context in
+                ConciergeBatchReplacementReviewSheet(
+                    context: context,
+                    onConfirm: { reviewedEntries, returnContext in
+                        confirmBuyerBatchReplacementReview(reviewedEntries, returnContext: returnContext)
+                    },
+                    onOpenEntry: { entry, returnContext in
+                        openBuyerBatchReplacementReviewEntry(entry, returnContext: returnContext)
+                    },
+                    onCloseEntries: { entryIDs, remainingCount in
+                        closeBuyerBatchReviewEntries(entryIDs, remainingCount: remainingCount)
+                    }
+                )
+                .environmentObject(store)
+            }
             .sheet(item: $conciergeBookingContext) { context in
                 PostSaleConciergeSheet(
                     listing: context.listing,
                     serviceKind: context.serviceKind,
                     counterpartName: context.counterpartName,
+                    focus: context.focus,
+                    preferredProviderID: context.preferredProviderID,
+                    preferredReplacementStrategy: context.preferredReplacementStrategy,
                     currentBooking: context.currentBooking,
+                    manualReviewContext: context.manualReviewContext,
                     onConfirmProvider: { note in
                         confirmBuyerConciergeProvider(context: context, note: note)
+                    },
+                    onLogFollowUp: {
+                        logBuyerConciergeFollowUp(context: context)
+                    },
+                    onSnoozeReminder: {
+                        snoozeBuyerConciergeReminder(context: context)
+                    },
+                    onLogIssue: {
+                        openBuyerConciergeResolution(context: context, mode: .logIssue)
+                    },
+                    onResolveIssue: {
+                        openBuyerConciergeResolution(context: context, mode: .resolveIssue)
                     }
                 ) { provider, scheduledFor, notes, estimatedCost in
                     bookBuyerPostSaleConciergeService(
@@ -1046,27 +1084,26 @@ private struct SavedView: View {
                     }
                 }
 
-                HStack(spacing: 10) {
-                    Spacer(minLength: 0)
+                HighlightInformationCard(
+                    title: "Backup mode: \(store.currentUser.conciergeReplacementStrategy.title)",
+                    message: "Any queue-generated provider replacement suggestions in Buyer Hub are being ranked with this strategy right now.",
+                    supporting: store.currentUser.conciergeReplacementStrategy.detail
+                )
 
-                    Button("Log selected") {
-                        logSelectedBuyerAttentionItems(selectedItems)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        buyerAttentionBatchActionButtons(
+                            selectedItems: selectedItems
+                        )
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(selectedItems.contains(where: \.row.canLogFollowUp) == false)
 
-                    Button("Snooze 24h") {
-                        snoozeSelectedBuyerAttentionItems(selectedItems)
+                    VStack(alignment: .trailing, spacing: 10) {
+                        buyerAttentionBatchActionButtons(
+                            selectedItems: selectedItems
+                        )
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(selectedItems.contains(where: \.row.canSnoozeReminder) == false)
-
-                    Button("Confirm selected") {
-                        confirmSelectedBuyerAttentionItems(selectedItems)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(selectedItems.contains(where: \.row.canConfirmProvider) == false)
                 }
+                .frame(maxWidth: .infinity, alignment: .trailing)
 
                 ForEach(PostSaleConciergeServiceKind.allCases, id: \.self) { serviceKind in
                     let groupItems = items.filter { $0.row.kind == serviceKind }
@@ -1082,6 +1119,9 @@ private struct SavedView: View {
                             ForEach(groupItems) { item in
                                 let booking = item.entry.offer.conciergeBooking(for: item.row.kind)
                                 let provider = booking?.provider
+                                let previewTaskID = booking.map {
+                                    "\(item.id)-\(conciergeReplacementPreviewFingerprint(for: $0, strategy: store.currentUser.conciergeReplacementStrategy))"
+                                } ?? item.id
                                 ConciergeAttentionQueueCard(
                                     title: item.row.title,
                                     listingTitle: item.entry.listing.title,
@@ -1102,11 +1142,33 @@ private struct SavedView: View {
                                     canSnooze: item.row.canSnoozeReminder,
                                     canConfirm: item.row.canConfirmProvider,
                                     canLogIssue: item.row.canLogIssue,
+                                    currentProvider: provider,
                                     providerCallURL: provider.flatMap(conciergeProviderCallURL),
                                     providerWebsiteURL: provider?.websiteURL,
                                     providerMapsURL: provider?.mapsURL,
+                                    suggestedReplacement: suggestedReplacementPreviews[item.id],
+                                    isLoadingSuggestedReplacement: loadingSuggestedReplacementPreviewIDs.contains(item.id),
+                                    isPreparingSuggestedReplacement: preparingSuggestedReplacementItemID == item.id,
                                     onToggleSelection: {
                                         toggleBuyerAttentionSelection(item)
+                                    },
+                                    onPrimaryAction: {
+                                        handleBuyerConciergePrimaryAction(
+                                            item.row.kind,
+                                            booking: booking,
+                                            for: item.entry
+                                        )
+                                    },
+                                    onUseSuggestedReplacement: booking.map { resolvedBooking in
+                                        {
+                                            prepareBuyerSuggestedReplacement(
+                                                item.row.kind,
+                                                booking: resolvedBooking,
+                                                itemID: item.id,
+                                                cachedSuggestion: suggestedReplacementPreviews[item.id],
+                                                for: item.entry
+                                            )
+                                        }
                                     },
                                     onOpenBooking: {
                                         openBuyerConciergeBooking(item.row.kind, for: item.entry)
@@ -1130,6 +1192,15 @@ private struct SavedView: View {
                                         selectedListing = item.entry.listing
                                     }
                                 )
+                                .task(id: previewTaskID) {
+                                    guard let booking else { return }
+                                    await prefetchBuyerSuggestedReplacementPreview(
+                                        itemID: item.id,
+                                        serviceKind: item.row.kind,
+                                        booking: booking,
+                                        entry: item.entry
+                                    )
+                                }
                             }
                         }
                     }
@@ -1262,6 +1333,390 @@ private struct SavedView: View {
             selectedAttentionItemIDs.remove(item.id)
         } else {
             selectedAttentionItemIDs.insert(item.id)
+        }
+    }
+
+    @ViewBuilder
+    private func buyerAttentionBatchActionButtons(
+        selectedItems: [BuyerConciergeAttentionItem]
+    ) -> some View {
+        Button(isBatchReplacingAttentionItems ? "Switching..." : "Review backups") {
+            replaceSelectedBuyerAttentionItems(selectedItems)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(BrandPalette.teal)
+        .disabled(selectedItems.isEmpty || isBatchReplacingAttentionItems)
+
+        Button("Log selected") {
+            logSelectedBuyerAttentionItems(selectedItems)
+        }
+        .buttonStyle(.bordered)
+        .disabled(selectedItems.contains(where: \.row.canLogFollowUp) == false || isBatchReplacingAttentionItems)
+
+        Button("Snooze 24h") {
+            snoozeSelectedBuyerAttentionItems(selectedItems)
+        }
+        .buttonStyle(.bordered)
+        .disabled(selectedItems.contains(where: \.row.canSnoozeReminder) == false || isBatchReplacingAttentionItems)
+
+        Button("Confirm selected") {
+            confirmSelectedBuyerAttentionItems(selectedItems)
+        }
+        .buttonStyle(.bordered)
+        .disabled(selectedItems.contains(where: \.row.canConfirmProvider) == false || isBatchReplacingAttentionItems)
+    }
+
+    private func replaceSelectedBuyerAttentionItems(_ items: [BuyerConciergeAttentionItem]) {
+        guard !items.isEmpty else {
+            buyerHubAlert = BuyerHubAlert(
+                title: "Nothing selected",
+                message: "Select one or more provider rows first to review ranked backup changes."
+            )
+            return
+        }
+
+        batchReplacementReviewContext = makeBuyerBatchReplacementReviewContext(items)
+    }
+
+    private func makeBuyerBatchReplacementReviewContext(
+        _ items: [BuyerConciergeAttentionItem],
+        refreshSummary: ConciergeBatchReviewRefreshSummary? = nil,
+        approvalRefreshSummary: ConciergeBatchReviewApprovalRefreshSummary? = nil,
+        initialStagedEntryIDs: [String] = [],
+        initialApprovedStagedEntryFingerprints: [String: String] = [:],
+        initialRefreshHighlightedStagedEntryIDs: [String] = [],
+        initialVisitedRefreshBookingEntryIDs: [String] = [],
+        initialHasHiddenCompletedBookingLane: Bool = false,
+        initialHasActiveBookingLaneReactivation: Bool = false,
+        initialHasDismissedBookingLaneReactivationCompletion: Bool = false,
+        initialReactivatedRefreshBookingEntryIDs: [String] = [],
+        initialReactivationCompletionReviewLastItemID: String? = nil,
+        initialReviewedReactivationCompletionItemIDs: [String] = [],
+        entriesOverride: [ConciergeBatchReplacementReviewEntry]? = nil
+    ) -> ConciergeBatchReplacementReviewContext {
+        ConciergeBatchReplacementReviewContext(
+            title: "Review ranked backups",
+            hubTitle: "Buyer Hub",
+            strategy: store.currentUser.conciergeReplacementStrategy,
+            entries: entriesOverride ?? items.map(makeBuyerBatchReplacementReviewEntry),
+            initialStagedEntryIDs: initialStagedEntryIDs,
+            initialApprovedStagedEntryFingerprints: initialApprovedStagedEntryFingerprints,
+            initialRefreshHighlightedStagedEntryIDs: initialRefreshHighlightedStagedEntryIDs,
+            initialVisitedRefreshBookingEntryIDs: initialVisitedRefreshBookingEntryIDs,
+            initialHasHiddenCompletedBookingLane: initialHasHiddenCompletedBookingLane,
+            initialHasActiveBookingLaneReactivation: initialHasActiveBookingLaneReactivation,
+            initialHasDismissedBookingLaneReactivationCompletion: initialHasDismissedBookingLaneReactivationCompletion,
+            initialReactivatedRefreshBookingEntryIDs: initialReactivatedRefreshBookingEntryIDs,
+            initialReactivationCompletionReviewLastItemID: initialReactivationCompletionReviewLastItemID,
+            initialReviewedReactivationCompletionItemIDs: initialReviewedReactivationCompletionItemIDs,
+            refreshSummary: refreshSummary,
+            approvalRefreshSummary: approvalRefreshSummary
+        )
+    }
+
+    private func makeBuyerBatchReplacementReviewEntry(
+        _ item: BuyerConciergeAttentionItem
+    ) -> ConciergeBatchReplacementReviewEntry {
+        let booking = item.entry.offer.conciergeBooking(for: item.row.kind)
+        let fingerprint = booking.map {
+            conciergeReplacementPreviewFingerprint(
+                for: $0,
+                strategy: store.currentUser.conciergeReplacementStrategy
+            )
+        }
+        let cachedSuggestion: ConciergeReplacementSuggestion?
+        if let booking,
+           conciergeAttentionPrimaryAction(for: booking) == .switchProvider,
+           let fingerprint,
+           suggestedReplacementPreviewFingerprints[item.id] == fingerprint {
+            cachedSuggestion = suggestedReplacementPreviews[item.id]
+        } else {
+            cachedSuggestion = nil
+        }
+
+        let manualReviewReason: String?
+        let isLoadingSuggestion: Bool
+        if let booking {
+            if conciergeAttentionPrimaryAction(for: booking) != .switchProvider {
+                manualReviewReason = "This provider thread is not currently in switch-provider mode, so it still needs manual review from the booking."
+                isLoadingSuggestion = false
+            } else if cachedSuggestion != nil {
+                manualReviewReason = nil
+                isLoadingSuggestion = false
+            } else {
+                manualReviewReason = nil
+                isLoadingSuggestion = true
+            }
+        } else {
+            manualReviewReason = "This concierge booking is no longer available in the settled archive."
+            isLoadingSuggestion = false
+        }
+
+        return ConciergeBatchReplacementReviewEntry(
+            id: item.id,
+            offerID: item.entry.offer.id,
+            listing: item.entry.listing,
+            serviceKind: item.row.kind,
+            counterpartLabel: "Seller",
+            counterpartName: item.entry.seller.name,
+            currentBooking: booking,
+            reviewFingerprint: fingerprint,
+            suggestedReplacement: cachedSuggestion,
+            isLoadingSuggestion: isLoadingSuggestion,
+            manualReviewReason: manualReviewReason
+        )
+    }
+
+    private func confirmBuyerBatchReplacementReview(
+        _ entries: [ConciergeBatchReplacementReviewEntry],
+        returnContext: ConciergeBatchReviewReturnContext
+    ) {
+        let actionableEntries = entries.filter(\.canApplySuggestedReplacement)
+        guard !actionableEntries.isEmpty else {
+            buyerHubAlert = BuyerHubAlert(
+                title: "No backups ready",
+                message: "No selected provider rows finished with a ranked backup yet, so these bookings still need manual review."
+            )
+            return
+        }
+
+        batchReplacementReviewContext = nil
+        isBatchReplacingAttentionItems = true
+
+        Task {
+            await performBuyerBatchReplacement(actionableEntries, returnContext: returnContext)
+        }
+    }
+
+    private func openBuyerBatchReplacementReviewEntry(
+        _ entry: ConciergeBatchReplacementReviewEntry,
+        returnContext: ConciergeBatchReviewReturnContext
+    ) {
+        guard let offer = store.offer(id: entry.offerID),
+              let listing = store.listing(id: offer.listingID),
+              let seller = store.user(id: offer.sellerID) else {
+            buyerHubAlert = BuyerHubAlert(
+                title: "Booking unavailable",
+                message: "That concierge booking is no longer available for manual review."
+            )
+            return
+        }
+
+        let currentBooking = offer.conciergeBooking(for: entry.serviceKind)
+        let focus: PostSaleConciergeBookingFocus
+        if let currentBooking,
+           conciergeAttentionPrimaryAction(for: currentBooking) == .switchProvider {
+            focus = .replacement
+        } else {
+            focus = .standard
+        }
+
+        let preferredProviderID = focus == .replacement ? entry.suggestedReplacement?.provider.id : nil
+        let manualReviewContext = conciergeManualReviewContext(
+            hubTitle: "Buyer Hub",
+            entry: entry,
+            focus: focus
+        )
+        batchReplacementReviewContext = nil
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            conciergeBookingContext = PostSaleConciergeBookingContext(
+                offerID: offer.id,
+                listing: listing,
+                serviceKind: entry.serviceKind,
+                counterpartName: seller.name,
+                focus: focus,
+                preferredProviderID: preferredProviderID,
+                preferredReplacementStrategy: store.currentUser.conciergeReplacementStrategy,
+                currentBooking: currentBooking,
+                manualReviewContext: manualReviewContext,
+                batchReviewReturnContext: returnContext
+            )
+        }
+    }
+
+    private func reopenBuyerBatchReview(
+        _ returnContext: ConciergeBatchReviewReturnContext,
+        successTitle: String,
+        successMessage: String
+    ) {
+        let refreshedItems = buyerAttentionItems.filter { returnContext.itemIDs.contains($0.id) }
+        let survivingIDs = Set(refreshedItems.map(\.id))
+        selectedAttentionItemIDs = survivingIDs
+
+        guard refreshedItems.isEmpty == false else {
+            batchReplacementReviewContext = nil
+            let clearedCount = returnContext.itemIDs.count
+            buyerHubAlert = BuyerHubAlert(
+                title: "\(successTitle) • Review complete",
+                message: "\(successMessage) \(clearedCount) selected review row\(clearedCount == 1 ? "" : "s") cleared from \(returnContext.hubTitle)."
+            )
+            return
+        }
+
+        let refreshedEntries = refreshedItems.map(makeBuyerBatchReplacementReviewEntry)
+        let previousSnapshotsByID = Dictionary(
+            uniqueKeysWithValues: returnContext.previousSnapshots.map { ($0.id, $0) }
+        )
+        let refreshedEntriesWithChangeHighlights = refreshedEntries.map { entry in
+            var updatedEntry = entry
+            if let previousSnapshot = previousSnapshotsByID[entry.id] {
+                updatedEntry.rowChangeSummary = conciergeBatchReviewRowChangeSummary(
+                    previousSnapshot: previousSnapshot,
+                    refreshedEntry: entry
+                )
+            }
+            return updatedEntry
+        }
+        let approvalRefreshState = conciergeBatchReviewStagedRefreshState(
+            previousStagedEntryIDs: returnContext.stagedEntryIDs,
+            previousApprovalFingerprints: returnContext.stagedApprovalFingerprints,
+            previousRefreshHighlightedEntryIDs: returnContext.refreshHighlightedStagedEntryIDs,
+            refreshedEntries: refreshedEntriesWithChangeHighlights
+        )
+        let refreshSummary = conciergeBatchReviewRefreshSummary(
+            hubTitle: returnContext.hubTitle,
+            actionTitle: successTitle,
+            actionMessage: successMessage,
+            previousSelectionCount: returnContext.itemIDs.count,
+            refreshedEntries: refreshedEntriesWithChangeHighlights,
+            itemTitlesByID: returnContext.itemTitlesByID,
+            itemReferencesByID: returnContext.itemReferencesByID,
+            currentStagedEntryIDs: approvalRefreshState.stagedEntryIDs,
+            reviewedRefreshHighlightCount: returnContext.reviewedRefreshHighlightEntryIDs.count,
+            appliedRefreshHighlightCount: returnContext.appliedRefreshHighlightEntryIDs.count,
+            reviewedRefreshHighlightIDs: returnContext.reviewedRefreshHighlightEntryIDs,
+            appliedRefreshHighlightIDs: returnContext.appliedRefreshHighlightEntryIDs
+        )
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            batchReplacementReviewContext = makeBuyerBatchReplacementReviewContext(
+                refreshedItems,
+                refreshSummary: refreshSummary,
+                approvalRefreshSummary: approvalRefreshState.summary,
+                initialStagedEntryIDs: approvalRefreshState.stagedEntryIDs,
+                initialApprovedStagedEntryFingerprints: approvalRefreshState.approvalFingerprints,
+                initialRefreshHighlightedStagedEntryIDs: approvalRefreshState.refreshHighlightedEntryIDs,
+                initialVisitedRefreshBookingEntryIDs: returnContext.visitedRefreshBookingEntryIDs,
+                initialHasHiddenCompletedBookingLane: returnContext.hasHiddenCompletedBookingLane,
+                initialHasActiveBookingLaneReactivation: returnContext.hasActiveBookingLaneReactivation,
+                initialHasDismissedBookingLaneReactivationCompletion: returnContext.hasDismissedBookingLaneReactivationCompletion,
+                initialReactivatedRefreshBookingEntryIDs: returnContext.reactivatedRefreshBookingEntryIDs,
+                initialReactivationCompletionReviewLastItemID: returnContext.reactivationCompletionReviewLastItemID,
+                initialReviewedReactivationCompletionItemIDs: returnContext.reviewedReactivationCompletionItemIDs,
+                entriesOverride: refreshedEntriesWithChangeHighlights
+            )
+        }
+    }
+
+    private func closeBuyerBatchReviewEntries(
+        _ entryIDs: [String],
+        remainingCount: Int
+    ) {
+        let idSet = Set(entryIDs)
+        selectedAttentionItemIDs.subtract(idSet)
+
+        guard remainingCount == 0 else {
+            return
+        }
+
+        batchReplacementReviewContext = nil
+        let closedCount = entryIDs.count
+        buyerHubAlert = BuyerHubAlert(
+            title: "Review complete",
+            message: "Closed \(closedCount) safe review row\(closedCount == 1 ? "" : "s"). Buyer Hub only has unresolved concierge items selected now."
+        )
+    }
+
+    @MainActor
+    private func performBuyerBatchReplacement(
+        _ entries: [ConciergeBatchReplacementReviewEntry],
+        returnContext: ConciergeBatchReviewReturnContext? = nil
+    ) async {
+        defer { isBatchReplacingAttentionItems = false }
+
+        var successCount = 0
+        var unavailableCount = 0
+        var succeededIDs: [String] = []
+
+        for entry in entries {
+            guard let reviewedSuggestion = entry.suggestedReplacement,
+                  let offer = store.offer(id: entry.offerID),
+                  let booking = offer.conciergeBooking(for: entry.serviceKind),
+                  conciergeAttentionPrimaryAction(for: booking) == .switchProvider else {
+                unavailableCount += 1
+                continue
+            }
+
+            let currentFingerprint = conciergeReplacementPreviewFingerprint(
+                for: booking,
+                strategy: store.currentUser.conciergeReplacementStrategy
+            )
+            guard entry.reviewFingerprint == currentFingerprint,
+                  let seller = store.user(id: offer.sellerID),
+                  let outcome = store.bookPostSaleConciergeService(
+                    offerID: offer.id,
+                    userID: store.currentUserID,
+                    serviceKind: entry.serviceKind,
+                    provider: reviewedSuggestion.provider,
+                    scheduledFor: booking.scheduledFor,
+                    notes: booking.notes,
+                    estimatedCost: booking.estimatedCost
+                  ) else {
+                unavailableCount += 1
+                continue
+            }
+
+            messaging.sendMessage(
+                listing: entry.listing,
+                from: store.currentUser,
+                to: seller,
+                body: outcome.threadMessage,
+                isSystem: true
+            )
+
+            successCount += 1
+            succeededIDs.append(entry.id)
+            suggestedReplacementPreviews.removeValue(forKey: entry.id)
+            suggestedReplacementPreviewFingerprints.removeValue(forKey: entry.id)
+        }
+
+        let manualReviewCount = entries.count - successCount - unavailableCount
+        selectedAttentionItemIDs.subtract(succeededIDs)
+
+        var messageParts: [String] = []
+        if successCount > 0 {
+            messageParts.append(
+                "Switched \(successCount) concierge booking\(successCount == 1 ? "" : "s") to the best ranked backup from the attention queue."
+            )
+        }
+        if manualReviewCount > 0 {
+            messageParts.append(
+                "\(manualReviewCount) booking\(manualReviewCount == 1 ? "" : "s") still need manual review because no ranked backup was available when the review sheet finished."
+            )
+        }
+        if unavailableCount > 0 {
+            messageParts.append(
+                "\(unavailableCount) booking\(unavailableCount == 1 ? "" : "s") changed after review and were skipped so the switch stayed safe."
+            )
+        }
+
+        let alertTitle = successCount == 0 ? "Replacement unavailable" : "Batch replacement complete"
+        let alertMessage = messageParts.isEmpty
+            ? "Those provider rows are no longer ready to switch."
+            : messageParts.joined(separator: " ")
+
+        if successCount > 0, let returnContext {
+            reopenBuyerBatchReview(
+                returnContext,
+                successTitle: alertTitle,
+                successMessage: alertMessage
+            )
+        } else {
+            buyerHubAlert = BuyerHubAlert(
+                title: alertTitle,
+                message: alertMessage
+            )
         }
     }
 
@@ -2322,15 +2777,157 @@ private struct SavedView: View {
 
     private func openBuyerConciergeBooking(
         _ serviceKind: PostSaleConciergeServiceKind,
-        for entry: BuyerTransactionEntry
+        for entry: BuyerTransactionEntry,
+        focus: PostSaleConciergeBookingFocus = .standard,
+        preferredProviderID: String? = nil
     ) {
         conciergeBookingContext = PostSaleConciergeBookingContext(
             offerID: entry.offer.id,
             listing: entry.listing,
             serviceKind: serviceKind,
             counterpartName: entry.seller.name,
+            focus: focus,
+            preferredProviderID: preferredProviderID,
+            preferredReplacementStrategy: store.currentUser.conciergeReplacementStrategy,
             currentBooking: entry.offer.conciergeBooking(for: serviceKind)
         )
+    }
+
+    private func handleBuyerConciergePrimaryAction(
+        _ serviceKind: PostSaleConciergeServiceKind,
+        booking: PostSaleConciergeBooking?,
+        for entry: BuyerTransactionEntry
+    ) {
+        guard let booking else {
+            openBuyerConciergeBooking(serviceKind, for: entry)
+            return
+        }
+
+        switch conciergeAttentionPrimaryAction(for: booking) {
+        case .switchProvider:
+            openBuyerConciergeBooking(serviceKind, for: entry, focus: .replacement)
+        case .callProvider:
+            if let callURL = conciergeProviderCallURL(booking.provider) {
+                openURL(callURL)
+            } else {
+                openBuyerConciergeBooking(serviceKind, for: entry)
+            }
+        case .reviewBooking, .viewBooking:
+            openBuyerConciergeBooking(serviceKind, for: entry)
+        }
+    }
+
+    private func prepareBuyerSuggestedReplacement(
+        _ serviceKind: PostSaleConciergeServiceKind,
+        booking: PostSaleConciergeBooking,
+        itemID: String,
+        cachedSuggestion: ConciergeReplacementSuggestion? = nil,
+        for entry: BuyerTransactionEntry
+    ) {
+        if let cachedSuggestion {
+            openBuyerConciergeBooking(
+                serviceKind,
+                for: entry,
+                focus: .replacement,
+                preferredProviderID: cachedSuggestion.provider.id
+            )
+            buyerHubAlert = BuyerHubAlert(
+                title: "Best backup ready",
+                message: "\(cachedSuggestion.provider.name) is already ranked as the strongest replacement for this \(serviceKind.title.lowercased()) booking."
+            )
+            return
+        }
+
+        preparingSuggestedReplacementItemID = itemID
+
+        Task {
+            do {
+                let providers = try await store.searchPostSaleConciergeProviders(
+                    for: entry.listing,
+                    serviceKind: serviceKind
+                )
+                let bestProvider = bestConciergeReplacementProvider(
+                    for: booking,
+                    listing: entry.listing,
+                    candidates: providers,
+                    strategy: store.currentUser.conciergeReplacementStrategy
+                )
+
+                await MainActor.run {
+                    preparingSuggestedReplacementItemID = nil
+                    openBuyerConciergeBooking(
+                        serviceKind,
+                        for: entry,
+                        focus: .replacement,
+                        preferredProviderID: bestProvider?.id
+                    )
+                    buyerHubAlert = BuyerHubAlert(
+                        title: bestProvider == nil ? "Replacement options opened" : "Best backup ready",
+                        message: bestProvider == nil
+                            ? "No ranked backup was available yet, so the full replacement sheet is open for manual selection."
+                            : "\(bestProvider!.name) is preselected as the strongest replacement for this \(serviceKind.title.lowercased()) booking."
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    preparingSuggestedReplacementItemID = nil
+                    openBuyerConciergeBooking(serviceKind, for: entry, focus: .replacement)
+                    buyerHubAlert = BuyerHubAlert(
+                        title: "Replacement search unavailable",
+                        message: "Could not rank local backups right now, but the replacement sheet is open so you can choose one manually."
+                    )
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func prefetchBuyerSuggestedReplacementPreview(
+        itemID: String,
+        serviceKind: PostSaleConciergeServiceKind,
+        booking: PostSaleConciergeBooking,
+        entry: BuyerTransactionEntry
+    ) async {
+        let fingerprint = conciergeReplacementPreviewFingerprint(
+            for: booking,
+            strategy: store.currentUser.conciergeReplacementStrategy
+        )
+        guard conciergeAttentionPrimaryAction(for: booking) == .switchProvider,
+              suggestedReplacementPreviewFingerprints[itemID] != fingerprint ||
+                suggestedReplacementPreviews[itemID] == nil,
+              loadingSuggestedReplacementPreviewIDs.contains(itemID) == false else {
+            return
+        }
+
+        loadingSuggestedReplacementPreviewIDs.insert(itemID)
+        defer { loadingSuggestedReplacementPreviewIDs.remove(itemID) }
+
+        do {
+            let providers = try await store.searchPostSaleConciergeProviders(
+                for: entry.listing,
+                serviceKind: serviceKind
+            )
+            let rankedProviders = rankedConciergeReplacementProviders(
+                for: booking,
+                listing: entry.listing,
+                candidates: providers,
+                strategy: store.currentUser.conciergeReplacementStrategy
+            )
+            guard let bestProvider = rankedProviders.first else {
+                return
+            }
+
+            suggestedReplacementPreviews[itemID] = conciergeReplacementSuggestion(
+                for: bestProvider,
+                currentBooking: booking,
+                listing: entry.listing,
+                rankedCandidates: rankedProviders,
+                strategy: store.currentUser.conciergeReplacementStrategy
+            )
+            suggestedReplacementPreviewFingerprints[itemID] = fingerprint
+        } catch {
+            return
+        }
     }
 
     private func handleBuyerReminderTarget(_ target: SaleReminderNavigationTarget?) {
@@ -2358,6 +2955,9 @@ private struct SavedView: View {
                 listing: listing,
                 serviceKind: serviceKind,
                 counterpartName: seller.name,
+                focus: .standard,
+                preferredProviderID: nil,
+                preferredReplacementStrategy: store.currentUser.conciergeReplacementStrategy,
                 currentBooking: booking
             )
 
@@ -2420,10 +3020,18 @@ private struct SavedView: View {
             isSystem: true
         )
 
-        buyerHubAlert = BuyerHubAlert(
-            title: "Booking saved",
-            message: outcome.noticeMessage
-        )
+        if let batchReviewReturnContext = context.batchReviewReturnContext {
+            reopenBuyerBatchReview(
+                batchReviewReturnContext,
+                successTitle: "Booking saved",
+                successMessage: outcome.noticeMessage
+            )
+        } else {
+            buyerHubAlert = BuyerHubAlert(
+                title: "Booking saved",
+                message: outcome.noticeMessage
+            )
+        }
     }
 
     private func confirmBuyerConciergeProvider(
@@ -2453,10 +3061,125 @@ private struct SavedView: View {
             isSystem: true
         )
 
-        buyerHubAlert = BuyerHubAlert(
-            title: "Provider confirmed",
-            message: outcome.noticeMessage
+        if let batchReviewReturnContext = context.batchReviewReturnContext {
+            reopenBuyerBatchReview(
+                batchReviewReturnContext,
+                successTitle: "Provider confirmed",
+                successMessage: outcome.noticeMessage
+            )
+        } else {
+            buyerHubAlert = BuyerHubAlert(
+                title: "Provider confirmed",
+                message: outcome.noticeMessage
+            )
+        }
+    }
+
+    private func logBuyerConciergeFollowUp(
+        context: PostSaleConciergeBookingContext
+    ) {
+        guard let offer = store.offer(id: context.offerID),
+              let seller = store.user(id: offer.sellerID),
+              let outcome = store.logPostSaleConciergeFollowUp(
+                offerID: context.offerID,
+                userID: store.currentUserID,
+                serviceKind: context.serviceKind,
+                note: ""
+              ) else {
+            buyerHubAlert = BuyerHubAlert(
+                title: "Follow-up unavailable",
+                message: "That concierge booking is not ready for provider follow-up right now."
+            )
+            return
+        }
+
+        messaging.sendMessage(
+            listing: context.listing,
+            from: store.currentUser,
+            to: seller,
+            body: outcome.threadMessage,
+            isSystem: true
         )
+
+        if let batchReviewReturnContext = context.batchReviewReturnContext {
+            reopenBuyerBatchReview(
+                batchReviewReturnContext,
+                successTitle: "Follow-up logged",
+                successMessage: outcome.noticeMessage
+            )
+        } else {
+            buyerHubAlert = BuyerHubAlert(
+                title: "Follow-up logged",
+                message: outcome.noticeMessage
+            )
+        }
+    }
+
+    private func snoozeBuyerConciergeReminder(
+        context: PostSaleConciergeBookingContext
+    ) {
+        guard let offer = store.offer(id: context.offerID),
+              let seller = store.user(id: offer.sellerID),
+              let outcome = store.snoozePostSaleConciergeFollowUp(
+                offerID: context.offerID,
+                userID: store.currentUserID,
+                serviceKind: context.serviceKind,
+                until: Date().addingTimeInterval(60 * 60 * 24)
+              ) else {
+            buyerHubAlert = BuyerHubAlert(
+                title: "Snooze unavailable",
+                message: "That concierge follow-up cannot be snoozed right now."
+            )
+            return
+        }
+
+        messaging.sendMessage(
+            listing: context.listing,
+            from: store.currentUser,
+            to: seller,
+            body: outcome.threadMessage,
+            isSystem: true
+        )
+
+        if let batchReviewReturnContext = context.batchReviewReturnContext {
+            reopenBuyerBatchReview(
+                batchReviewReturnContext,
+                successTitle: "Reminder snoozed",
+                successMessage: outcome.noticeMessage
+            )
+        } else {
+            buyerHubAlert = BuyerHubAlert(
+                title: "Reminder snoozed",
+                message: outcome.noticeMessage
+            )
+        }
+    }
+
+    private func openBuyerConciergeResolution(
+        context: PostSaleConciergeBookingContext,
+        mode: PostSaleConciergeResolutionMode
+    ) {
+        guard let offer = store.offer(id: context.offerID),
+              let seller = store.user(id: offer.sellerID),
+              let booking = offer.conciergeBooking(for: context.serviceKind) else {
+            buyerHubAlert = BuyerHubAlert(
+                title: "Review unavailable",
+                message: "That concierge booking is no longer available for a review update."
+            )
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            conciergeResolutionContext = PostSaleConciergeResolutionContext(
+                offerID: offer.id,
+                listing: context.listing,
+                serviceKind: context.serviceKind,
+                counterpartName: seller.name,
+                booking: booking,
+                mode: mode,
+                batchReviewReturnContext: context.batchReviewReturnContext
+            )
+        }
     }
 
     private func openBuyerConciergeQuote(
@@ -2948,10 +3671,18 @@ private struct SavedView: View {
             isSystem: true
         )
 
-        buyerHubAlert = BuyerHubAlert(
-            title: successTitle,
-            message: outcome.noticeMessage
-        )
+        if let batchReviewReturnContext = context.batchReviewReturnContext {
+            reopenBuyerBatchReview(
+                batchReviewReturnContext,
+                successTitle: successTitle,
+                successMessage: outcome.noticeMessage
+            )
+        } else {
+            buyerHubAlert = BuyerHubAlert(
+                title: successTitle,
+                message: outcome.noticeMessage
+            )
+        }
     }
 
     private func handleImportedConciergeInvoice(_ result: Result<[URL], Error>) {
@@ -3169,6 +3900,7 @@ private struct SavedView: View {
 private struct SellView: View {
     @EnvironmentObject private var store: MarketplaceStore
     @EnvironmentObject private var messaging: EncryptedMessagingService
+    @Environment(\.openURL) private var openURL
 
     @Binding var selectedTab: AppTab
     @Binding var selectedListing: PropertyListing?
@@ -3193,6 +3925,12 @@ private struct SellView: View {
     @State private var selectedAttentionItemIDs: Set<String> = []
     @State private var attentionSeverityFilter: ConciergeAttentionScopeFilter = .all
     @State private var attentionServiceFilter: ConciergeAttentionServiceFilter = .all
+    @State private var suggestedReplacementPreviews: [String: ConciergeReplacementSuggestion] = [:]
+    @State private var suggestedReplacementPreviewFingerprints: [String: String] = [:]
+    @State private var loadingSuggestedReplacementPreviewIDs: Set<String> = []
+    @State private var preparingSuggestedReplacementItemID: String?
+    @State private var isBatchReplacingAttentionItems = false
+    @State private var batchReplacementReviewContext: ConciergeBatchReplacementReviewContext?
 
     var body: some View {
         NavigationStack {
@@ -3317,14 +4055,45 @@ private struct SellView: View {
                     items: context.fileURLs.map { $0 as Any }
                 ) { _ in }
             }
+            .sheet(item: $batchReplacementReviewContext) { context in
+                ConciergeBatchReplacementReviewSheet(
+                    context: context,
+                    onConfirm: { reviewedEntries, returnContext in
+                        confirmSellerBatchReplacementReview(reviewedEntries, returnContext: returnContext)
+                    },
+                    onOpenEntry: { entry, returnContext in
+                        openSellerBatchReplacementReviewEntry(entry, returnContext: returnContext)
+                    },
+                    onCloseEntries: { entryIDs, remainingCount in
+                        closeSellerBatchReviewEntries(entryIDs, remainingCount: remainingCount)
+                    }
+                )
+                .environmentObject(store)
+            }
             .sheet(item: $conciergeBookingContext) { context in
                 PostSaleConciergeSheet(
                     listing: context.listing,
                     serviceKind: context.serviceKind,
                     counterpartName: context.counterpartName,
+                    focus: context.focus,
+                    preferredProviderID: context.preferredProviderID,
+                    preferredReplacementStrategy: context.preferredReplacementStrategy,
                     currentBooking: context.currentBooking,
+                    manualReviewContext: context.manualReviewContext,
                     onConfirmProvider: { note in
                         confirmSellerConciergeProvider(context: context, note: note)
+                    },
+                    onLogFollowUp: {
+                        logSellerConciergeFollowUp(context: context)
+                    },
+                    onSnoozeReminder: {
+                        snoozeSellerConciergeReminder(context: context)
+                    },
+                    onLogIssue: {
+                        openSellerConciergeResolution(context: context, mode: .logIssue)
+                    },
+                    onResolveIssue: {
+                        openSellerConciergeResolution(context: context, mode: .resolveIssue)
                     }
                 ) { provider, scheduledFor, notes, estimatedCost in
                     bookSellerPostSaleConciergeService(
@@ -3775,27 +4544,26 @@ private struct SellView: View {
                     }
                 }
 
-                HStack(spacing: 10) {
-                    Spacer(minLength: 0)
+                HighlightInformationCard(
+                    title: "Backup mode: \(store.currentUser.conciergeReplacementStrategy.title)",
+                    message: "Any queue-generated provider replacement suggestions in Seller Hub are being ranked with this strategy right now.",
+                    supporting: store.currentUser.conciergeReplacementStrategy.detail
+                )
 
-                    Button("Log selected") {
-                        logSelectedSellerAttentionItems(selectedItems)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        sellerAttentionBatchActionButtons(
+                            selectedItems: selectedItems
+                        )
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(selectedItems.contains(where: \.row.canLogFollowUp) == false)
 
-                    Button("Snooze 24h") {
-                        snoozeSelectedSellerAttentionItems(selectedItems)
+                    VStack(alignment: .trailing, spacing: 10) {
+                        sellerAttentionBatchActionButtons(
+                            selectedItems: selectedItems
+                        )
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(selectedItems.contains(where: \.row.canSnoozeReminder) == false)
-
-                    Button("Confirm selected") {
-                        confirmSelectedSellerAttentionItems(selectedItems)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(selectedItems.contains(where: \.row.canConfirmProvider) == false)
                 }
+                .frame(maxWidth: .infinity, alignment: .trailing)
 
                 ForEach(PostSaleConciergeServiceKind.allCases, id: \.self) { serviceKind in
                     let groupItems = items.filter { $0.row.kind == serviceKind }
@@ -3811,6 +4579,9 @@ private struct SellView: View {
                             ForEach(groupItems) { item in
                                 let booking = item.entry.offer.conciergeBooking(for: item.row.kind)
                                 let provider = booking?.provider
+                                let previewTaskID = booking.map {
+                                    "\(item.id)-\(conciergeReplacementPreviewFingerprint(for: $0, strategy: store.currentUser.conciergeReplacementStrategy))"
+                                } ?? item.id
                                 ConciergeAttentionQueueCard(
                                     title: item.row.title,
                                     listingTitle: item.entry.listing.title,
@@ -3831,11 +4602,33 @@ private struct SellView: View {
                                     canSnooze: item.row.canSnoozeReminder,
                                     canConfirm: item.row.canConfirmProvider,
                                     canLogIssue: item.row.canLogIssue,
+                                    currentProvider: provider,
                                     providerCallURL: provider.flatMap(conciergeProviderCallURL),
                                     providerWebsiteURL: provider?.websiteURL,
                                     providerMapsURL: provider?.mapsURL,
+                                    suggestedReplacement: suggestedReplacementPreviews[item.id],
+                                    isLoadingSuggestedReplacement: loadingSuggestedReplacementPreviewIDs.contains(item.id),
+                                    isPreparingSuggestedReplacement: preparingSuggestedReplacementItemID == item.id,
                                     onToggleSelection: {
                                         toggleSellerAttentionSelection(item)
+                                    },
+                                    onPrimaryAction: {
+                                        handleSellerConciergePrimaryAction(
+                                            item.row.kind,
+                                            booking: booking,
+                                            for: item.entry
+                                        )
+                                    },
+                                    onUseSuggestedReplacement: booking.map { resolvedBooking in
+                                        {
+                                            prepareSellerSuggestedReplacement(
+                                                item.row.kind,
+                                                booking: resolvedBooking,
+                                                itemID: item.id,
+                                                cachedSuggestion: suggestedReplacementPreviews[item.id],
+                                                for: item.entry
+                                            )
+                                        }
                                     },
                                     onOpenBooking: {
                                         openSellerConciergeBooking(item.row.kind, for: item.entry)
@@ -3859,6 +4652,15 @@ private struct SellView: View {
                                         selectedListing = item.entry.listing
                                     }
                                 )
+                                .task(id: previewTaskID) {
+                                    guard let booking else { return }
+                                    await prefetchSellerSuggestedReplacementPreview(
+                                        itemID: item.id,
+                                        serviceKind: item.row.kind,
+                                        booking: booking,
+                                        entry: item.entry
+                                    )
+                                }
                             }
                         }
                     }
@@ -4050,6 +4852,390 @@ private struct SellView: View {
             selectedAttentionItemIDs.remove(item.id)
         } else {
             selectedAttentionItemIDs.insert(item.id)
+        }
+    }
+
+    @ViewBuilder
+    private func sellerAttentionBatchActionButtons(
+        selectedItems: [SellerConciergeAttentionItem]
+    ) -> some View {
+        Button(isBatchReplacingAttentionItems ? "Switching..." : "Review backups") {
+            replaceSelectedSellerAttentionItems(selectedItems)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(BrandPalette.teal)
+        .disabled(selectedItems.isEmpty || isBatchReplacingAttentionItems)
+
+        Button("Log selected") {
+            logSelectedSellerAttentionItems(selectedItems)
+        }
+        .buttonStyle(.bordered)
+        .disabled(selectedItems.contains(where: \.row.canLogFollowUp) == false || isBatchReplacingAttentionItems)
+
+        Button("Snooze 24h") {
+            snoozeSelectedSellerAttentionItems(selectedItems)
+        }
+        .buttonStyle(.bordered)
+        .disabled(selectedItems.contains(where: \.row.canSnoozeReminder) == false || isBatchReplacingAttentionItems)
+
+        Button("Confirm selected") {
+            confirmSelectedSellerAttentionItems(selectedItems)
+        }
+        .buttonStyle(.bordered)
+        .disabled(selectedItems.contains(where: \.row.canConfirmProvider) == false || isBatchReplacingAttentionItems)
+    }
+
+    private func replaceSelectedSellerAttentionItems(_ items: [SellerConciergeAttentionItem]) {
+        guard !items.isEmpty else {
+            sellerHubAlert = SellerHubAlert(
+                title: "Nothing selected",
+                message: "Select one or more provider rows first to review ranked backup changes."
+            )
+            return
+        }
+
+        batchReplacementReviewContext = makeSellerBatchReplacementReviewContext(items)
+    }
+
+    private func makeSellerBatchReplacementReviewContext(
+        _ items: [SellerConciergeAttentionItem],
+        refreshSummary: ConciergeBatchReviewRefreshSummary? = nil,
+        approvalRefreshSummary: ConciergeBatchReviewApprovalRefreshSummary? = nil,
+        initialStagedEntryIDs: [String] = [],
+        initialApprovedStagedEntryFingerprints: [String: String] = [:],
+        initialRefreshHighlightedStagedEntryIDs: [String] = [],
+        initialVisitedRefreshBookingEntryIDs: [String] = [],
+        initialHasHiddenCompletedBookingLane: Bool = false,
+        initialHasActiveBookingLaneReactivation: Bool = false,
+        initialHasDismissedBookingLaneReactivationCompletion: Bool = false,
+        initialReactivatedRefreshBookingEntryIDs: [String] = [],
+        initialReactivationCompletionReviewLastItemID: String? = nil,
+        initialReviewedReactivationCompletionItemIDs: [String] = [],
+        entriesOverride: [ConciergeBatchReplacementReviewEntry]? = nil
+    ) -> ConciergeBatchReplacementReviewContext {
+        ConciergeBatchReplacementReviewContext(
+            title: "Review ranked backups",
+            hubTitle: "Seller Hub",
+            strategy: store.currentUser.conciergeReplacementStrategy,
+            entries: entriesOverride ?? items.map(makeSellerBatchReplacementReviewEntry),
+            initialStagedEntryIDs: initialStagedEntryIDs,
+            initialApprovedStagedEntryFingerprints: initialApprovedStagedEntryFingerprints,
+            initialRefreshHighlightedStagedEntryIDs: initialRefreshHighlightedStagedEntryIDs,
+            initialVisitedRefreshBookingEntryIDs: initialVisitedRefreshBookingEntryIDs,
+            initialHasHiddenCompletedBookingLane: initialHasHiddenCompletedBookingLane,
+            initialHasActiveBookingLaneReactivation: initialHasActiveBookingLaneReactivation,
+            initialHasDismissedBookingLaneReactivationCompletion: initialHasDismissedBookingLaneReactivationCompletion,
+            initialReactivatedRefreshBookingEntryIDs: initialReactivatedRefreshBookingEntryIDs,
+            initialReactivationCompletionReviewLastItemID: initialReactivationCompletionReviewLastItemID,
+            initialReviewedReactivationCompletionItemIDs: initialReviewedReactivationCompletionItemIDs,
+            refreshSummary: refreshSummary,
+            approvalRefreshSummary: approvalRefreshSummary
+        )
+    }
+
+    private func makeSellerBatchReplacementReviewEntry(
+        _ item: SellerConciergeAttentionItem
+    ) -> ConciergeBatchReplacementReviewEntry {
+        let booking = item.entry.offer.conciergeBooking(for: item.row.kind)
+        let fingerprint = booking.map {
+            conciergeReplacementPreviewFingerprint(
+                for: $0,
+                strategy: store.currentUser.conciergeReplacementStrategy
+            )
+        }
+        let cachedSuggestion: ConciergeReplacementSuggestion?
+        if let booking,
+           conciergeAttentionPrimaryAction(for: booking) == .switchProvider,
+           let fingerprint,
+           suggestedReplacementPreviewFingerprints[item.id] == fingerprint {
+            cachedSuggestion = suggestedReplacementPreviews[item.id]
+        } else {
+            cachedSuggestion = nil
+        }
+
+        let manualReviewReason: String?
+        let isLoadingSuggestion: Bool
+        if let booking {
+            if conciergeAttentionPrimaryAction(for: booking) != .switchProvider {
+                manualReviewReason = "This provider thread is not currently in switch-provider mode, so it still needs manual review from the booking."
+                isLoadingSuggestion = false
+            } else if cachedSuggestion != nil {
+                manualReviewReason = nil
+                isLoadingSuggestion = false
+            } else {
+                manualReviewReason = nil
+                isLoadingSuggestion = true
+            }
+        } else {
+            manualReviewReason = "This concierge booking is no longer available in the settled archive."
+            isLoadingSuggestion = false
+        }
+
+        return ConciergeBatchReplacementReviewEntry(
+            id: item.id,
+            offerID: item.entry.offer.id,
+            listing: item.entry.listing,
+            serviceKind: item.row.kind,
+            counterpartLabel: "Buyer",
+            counterpartName: item.entry.buyer.name,
+            currentBooking: booking,
+            reviewFingerprint: fingerprint,
+            suggestedReplacement: cachedSuggestion,
+            isLoadingSuggestion: isLoadingSuggestion,
+            manualReviewReason: manualReviewReason
+        )
+    }
+
+    private func confirmSellerBatchReplacementReview(
+        _ entries: [ConciergeBatchReplacementReviewEntry],
+        returnContext: ConciergeBatchReviewReturnContext
+    ) {
+        let actionableEntries = entries.filter(\.canApplySuggestedReplacement)
+        guard !actionableEntries.isEmpty else {
+            sellerHubAlert = SellerHubAlert(
+                title: "No backups ready",
+                message: "No selected provider rows finished with a ranked backup yet, so these bookings still need manual review."
+            )
+            return
+        }
+
+        batchReplacementReviewContext = nil
+        isBatchReplacingAttentionItems = true
+
+        Task {
+            await performSellerBatchReplacement(actionableEntries, returnContext: returnContext)
+        }
+    }
+
+    private func openSellerBatchReplacementReviewEntry(
+        _ entry: ConciergeBatchReplacementReviewEntry,
+        returnContext: ConciergeBatchReviewReturnContext
+    ) {
+        guard let offer = store.offer(id: entry.offerID),
+              let listing = store.listing(id: offer.listingID),
+              let buyer = store.user(id: offer.buyerID) else {
+            sellerHubAlert = SellerHubAlert(
+                title: "Booking unavailable",
+                message: "That concierge booking is no longer available for manual review."
+            )
+            return
+        }
+
+        let currentBooking = offer.conciergeBooking(for: entry.serviceKind)
+        let focus: PostSaleConciergeBookingFocus
+        if let currentBooking,
+           conciergeAttentionPrimaryAction(for: currentBooking) == .switchProvider {
+            focus = .replacement
+        } else {
+            focus = .standard
+        }
+
+        let preferredProviderID = focus == .replacement ? entry.suggestedReplacement?.provider.id : nil
+        let manualReviewContext = conciergeManualReviewContext(
+            hubTitle: "Seller Hub",
+            entry: entry,
+            focus: focus
+        )
+        batchReplacementReviewContext = nil
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            conciergeBookingContext = PostSaleConciergeBookingContext(
+                offerID: offer.id,
+                listing: listing,
+                serviceKind: entry.serviceKind,
+                counterpartName: buyer.name,
+                focus: focus,
+                preferredProviderID: preferredProviderID,
+                preferredReplacementStrategy: store.currentUser.conciergeReplacementStrategy,
+                currentBooking: currentBooking,
+                manualReviewContext: manualReviewContext,
+                batchReviewReturnContext: returnContext
+            )
+        }
+    }
+
+    private func reopenSellerBatchReview(
+        _ returnContext: ConciergeBatchReviewReturnContext,
+        successTitle: String,
+        successMessage: String
+    ) {
+        let refreshedItems = sellerAttentionItems.filter { returnContext.itemIDs.contains($0.id) }
+        let survivingIDs = Set(refreshedItems.map(\.id))
+        selectedAttentionItemIDs = survivingIDs
+
+        guard refreshedItems.isEmpty == false else {
+            batchReplacementReviewContext = nil
+            let clearedCount = returnContext.itemIDs.count
+            sellerHubAlert = SellerHubAlert(
+                title: "\(successTitle) • Review complete",
+                message: "\(successMessage) \(clearedCount) selected review row\(clearedCount == 1 ? "" : "s") cleared from \(returnContext.hubTitle)."
+            )
+            return
+        }
+
+        let refreshedEntries = refreshedItems.map(makeSellerBatchReplacementReviewEntry)
+        let previousSnapshotsByID = Dictionary(
+            uniqueKeysWithValues: returnContext.previousSnapshots.map { ($0.id, $0) }
+        )
+        let refreshedEntriesWithChangeHighlights = refreshedEntries.map { entry in
+            var updatedEntry = entry
+            if let previousSnapshot = previousSnapshotsByID[entry.id] {
+                updatedEntry.rowChangeSummary = conciergeBatchReviewRowChangeSummary(
+                    previousSnapshot: previousSnapshot,
+                    refreshedEntry: entry
+                )
+            }
+            return updatedEntry
+        }
+        let approvalRefreshState = conciergeBatchReviewStagedRefreshState(
+            previousStagedEntryIDs: returnContext.stagedEntryIDs,
+            previousApprovalFingerprints: returnContext.stagedApprovalFingerprints,
+            previousRefreshHighlightedEntryIDs: returnContext.refreshHighlightedStagedEntryIDs,
+            refreshedEntries: refreshedEntriesWithChangeHighlights
+        )
+        let refreshSummary = conciergeBatchReviewRefreshSummary(
+            hubTitle: returnContext.hubTitle,
+            actionTitle: successTitle,
+            actionMessage: successMessage,
+            previousSelectionCount: returnContext.itemIDs.count,
+            refreshedEntries: refreshedEntriesWithChangeHighlights,
+            itemTitlesByID: returnContext.itemTitlesByID,
+            itemReferencesByID: returnContext.itemReferencesByID,
+            currentStagedEntryIDs: approvalRefreshState.stagedEntryIDs,
+            reviewedRefreshHighlightCount: returnContext.reviewedRefreshHighlightEntryIDs.count,
+            appliedRefreshHighlightCount: returnContext.appliedRefreshHighlightEntryIDs.count,
+            reviewedRefreshHighlightIDs: returnContext.reviewedRefreshHighlightEntryIDs,
+            appliedRefreshHighlightIDs: returnContext.appliedRefreshHighlightEntryIDs
+        )
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            batchReplacementReviewContext = makeSellerBatchReplacementReviewContext(
+                refreshedItems,
+                refreshSummary: refreshSummary,
+                approvalRefreshSummary: approvalRefreshState.summary,
+                initialStagedEntryIDs: approvalRefreshState.stagedEntryIDs,
+                initialApprovedStagedEntryFingerprints: approvalRefreshState.approvalFingerprints,
+                initialRefreshHighlightedStagedEntryIDs: approvalRefreshState.refreshHighlightedEntryIDs,
+                initialVisitedRefreshBookingEntryIDs: returnContext.visitedRefreshBookingEntryIDs,
+                initialHasHiddenCompletedBookingLane: returnContext.hasHiddenCompletedBookingLane,
+                initialHasActiveBookingLaneReactivation: returnContext.hasActiveBookingLaneReactivation,
+                initialHasDismissedBookingLaneReactivationCompletion: returnContext.hasDismissedBookingLaneReactivationCompletion,
+                initialReactivatedRefreshBookingEntryIDs: returnContext.reactivatedRefreshBookingEntryIDs,
+                initialReactivationCompletionReviewLastItemID: returnContext.reactivationCompletionReviewLastItemID,
+                initialReviewedReactivationCompletionItemIDs: returnContext.reviewedReactivationCompletionItemIDs,
+                entriesOverride: refreshedEntriesWithChangeHighlights
+            )
+        }
+    }
+
+    private func closeSellerBatchReviewEntries(
+        _ entryIDs: [String],
+        remainingCount: Int
+    ) {
+        let idSet = Set(entryIDs)
+        selectedAttentionItemIDs.subtract(idSet)
+
+        guard remainingCount == 0 else {
+            return
+        }
+
+        batchReplacementReviewContext = nil
+        let closedCount = entryIDs.count
+        sellerHubAlert = SellerHubAlert(
+            title: "Review complete",
+            message: "Closed \(closedCount) safe review row\(closedCount == 1 ? "" : "s"). Seller Hub only has unresolved concierge items selected now."
+        )
+    }
+
+    @MainActor
+    private func performSellerBatchReplacement(
+        _ entries: [ConciergeBatchReplacementReviewEntry],
+        returnContext: ConciergeBatchReviewReturnContext? = nil
+    ) async {
+        defer { isBatchReplacingAttentionItems = false }
+
+        var successCount = 0
+        var unavailableCount = 0
+        var succeededIDs: [String] = []
+
+        for entry in entries {
+            guard let reviewedSuggestion = entry.suggestedReplacement,
+                  let offer = store.offer(id: entry.offerID),
+                  let booking = offer.conciergeBooking(for: entry.serviceKind),
+                  conciergeAttentionPrimaryAction(for: booking) == .switchProvider else {
+                unavailableCount += 1
+                continue
+            }
+
+            let currentFingerprint = conciergeReplacementPreviewFingerprint(
+                for: booking,
+                strategy: store.currentUser.conciergeReplacementStrategy
+            )
+            guard entry.reviewFingerprint == currentFingerprint,
+                  let buyer = store.user(id: offer.buyerID),
+                  let outcome = store.bookPostSaleConciergeService(
+                    offerID: offer.id,
+                    userID: store.currentUserID,
+                    serviceKind: entry.serviceKind,
+                    provider: reviewedSuggestion.provider,
+                    scheduledFor: booking.scheduledFor,
+                    notes: booking.notes,
+                    estimatedCost: booking.estimatedCost
+                  ) else {
+                unavailableCount += 1
+                continue
+            }
+
+            messaging.sendMessage(
+                listing: entry.listing,
+                from: store.currentUser,
+                to: buyer,
+                body: outcome.threadMessage,
+                isSystem: true
+            )
+
+            successCount += 1
+            succeededIDs.append(entry.id)
+            suggestedReplacementPreviews.removeValue(forKey: entry.id)
+            suggestedReplacementPreviewFingerprints.removeValue(forKey: entry.id)
+        }
+
+        let manualReviewCount = entries.count - successCount - unavailableCount
+        selectedAttentionItemIDs.subtract(succeededIDs)
+
+        var messageParts: [String] = []
+        if successCount > 0 {
+            messageParts.append(
+                "Switched \(successCount) concierge booking\(successCount == 1 ? "" : "s") to the best ranked backup from the attention queue."
+            )
+        }
+        if manualReviewCount > 0 {
+            messageParts.append(
+                "\(manualReviewCount) booking\(manualReviewCount == 1 ? "" : "s") still need manual review because no ranked backup was available when the review sheet finished."
+            )
+        }
+        if unavailableCount > 0 {
+            messageParts.append(
+                "\(unavailableCount) booking\(unavailableCount == 1 ? "" : "s") changed after review and were skipped so the switch stayed safe."
+            )
+        }
+
+        let alertTitle = successCount == 0 ? "Replacement unavailable" : "Batch replacement complete"
+        let alertMessage = messageParts.isEmpty
+            ? "Those provider rows are no longer ready to switch."
+            : messageParts.joined(separator: " ")
+
+        if successCount > 0, let returnContext {
+            reopenSellerBatchReview(
+                returnContext,
+                successTitle: alertTitle,
+                successMessage: alertMessage
+            )
+        } else {
+            sellerHubAlert = SellerHubAlert(
+                title: alertTitle,
+                message: alertMessage
+            )
         }
     }
 
@@ -5477,15 +6663,157 @@ private struct SellView: View {
 
     private func openSellerConciergeBooking(
         _ serviceKind: PostSaleConciergeServiceKind,
-        for entry: SellerOfferBoardEntry
+        for entry: SellerOfferBoardEntry,
+        focus: PostSaleConciergeBookingFocus = .standard,
+        preferredProviderID: String? = nil
     ) {
         conciergeBookingContext = PostSaleConciergeBookingContext(
             offerID: entry.offer.id,
             listing: entry.listing,
             serviceKind: serviceKind,
             counterpartName: entry.buyer.name,
+            focus: focus,
+            preferredProviderID: preferredProviderID,
+            preferredReplacementStrategy: store.currentUser.conciergeReplacementStrategy,
             currentBooking: entry.offer.conciergeBooking(for: serviceKind)
         )
+    }
+
+    private func handleSellerConciergePrimaryAction(
+        _ serviceKind: PostSaleConciergeServiceKind,
+        booking: PostSaleConciergeBooking?,
+        for entry: SellerOfferBoardEntry
+    ) {
+        guard let booking else {
+            openSellerConciergeBooking(serviceKind, for: entry)
+            return
+        }
+
+        switch conciergeAttentionPrimaryAction(for: booking) {
+        case .switchProvider:
+            openSellerConciergeBooking(serviceKind, for: entry, focus: .replacement)
+        case .callProvider:
+            if let callURL = conciergeProviderCallURL(booking.provider) {
+                openURL(callURL)
+            } else {
+                openSellerConciergeBooking(serviceKind, for: entry)
+            }
+        case .reviewBooking, .viewBooking:
+            openSellerConciergeBooking(serviceKind, for: entry)
+        }
+    }
+
+    private func prepareSellerSuggestedReplacement(
+        _ serviceKind: PostSaleConciergeServiceKind,
+        booking: PostSaleConciergeBooking,
+        itemID: String,
+        cachedSuggestion: ConciergeReplacementSuggestion? = nil,
+        for entry: SellerOfferBoardEntry
+    ) {
+        if let cachedSuggestion {
+            openSellerConciergeBooking(
+                serviceKind,
+                for: entry,
+                focus: .replacement,
+                preferredProviderID: cachedSuggestion.provider.id
+            )
+            sellerHubAlert = SellerHubAlert(
+                title: "Best backup ready",
+                message: "\(cachedSuggestion.provider.name) is already ranked as the strongest replacement for this \(serviceKind.title.lowercased()) booking."
+            )
+            return
+        }
+
+        preparingSuggestedReplacementItemID = itemID
+
+        Task {
+            do {
+                let providers = try await store.searchPostSaleConciergeProviders(
+                    for: entry.listing,
+                    serviceKind: serviceKind
+                )
+                let bestProvider = bestConciergeReplacementProvider(
+                    for: booking,
+                    listing: entry.listing,
+                    candidates: providers,
+                    strategy: store.currentUser.conciergeReplacementStrategy
+                )
+
+                await MainActor.run {
+                    preparingSuggestedReplacementItemID = nil
+                    openSellerConciergeBooking(
+                        serviceKind,
+                        for: entry,
+                        focus: .replacement,
+                        preferredProviderID: bestProvider?.id
+                    )
+                    sellerHubAlert = SellerHubAlert(
+                        title: bestProvider == nil ? "Replacement options opened" : "Best backup ready",
+                        message: bestProvider == nil
+                            ? "No ranked backup was available yet, so the full replacement sheet is open for manual selection."
+                            : "\(bestProvider!.name) is preselected as the strongest replacement for this \(serviceKind.title.lowercased()) booking."
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    preparingSuggestedReplacementItemID = nil
+                    openSellerConciergeBooking(serviceKind, for: entry, focus: .replacement)
+                    sellerHubAlert = SellerHubAlert(
+                        title: "Replacement search unavailable",
+                        message: "Could not rank local backups right now, but the replacement sheet is open so you can choose one manually."
+                    )
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func prefetchSellerSuggestedReplacementPreview(
+        itemID: String,
+        serviceKind: PostSaleConciergeServiceKind,
+        booking: PostSaleConciergeBooking,
+        entry: SellerOfferBoardEntry
+    ) async {
+        let fingerprint = conciergeReplacementPreviewFingerprint(
+            for: booking,
+            strategy: store.currentUser.conciergeReplacementStrategy
+        )
+        guard conciergeAttentionPrimaryAction(for: booking) == .switchProvider,
+              suggestedReplacementPreviewFingerprints[itemID] != fingerprint ||
+                suggestedReplacementPreviews[itemID] == nil,
+              loadingSuggestedReplacementPreviewIDs.contains(itemID) == false else {
+            return
+        }
+
+        loadingSuggestedReplacementPreviewIDs.insert(itemID)
+        defer { loadingSuggestedReplacementPreviewIDs.remove(itemID) }
+
+        do {
+            let providers = try await store.searchPostSaleConciergeProviders(
+                for: entry.listing,
+                serviceKind: serviceKind
+            )
+            let rankedProviders = rankedConciergeReplacementProviders(
+                for: booking,
+                listing: entry.listing,
+                candidates: providers,
+                strategy: store.currentUser.conciergeReplacementStrategy
+            )
+            guard let bestProvider = rankedProviders.first else {
+                return
+            }
+
+            suggestedReplacementPreviews[itemID] = conciergeReplacementSuggestion(
+                for: bestProvider,
+                currentBooking: booking,
+                listing: entry.listing,
+                rankedCandidates: rankedProviders,
+                strategy: store.currentUser.conciergeReplacementStrategy
+            )
+            suggestedReplacementPreviewFingerprints[itemID] = fingerprint
+        } catch {
+            return
+        }
     }
 
     private func handleSellerReminderTarget(_ target: SaleReminderNavigationTarget?) {
@@ -5513,6 +6841,9 @@ private struct SellView: View {
                 listing: listing,
                 serviceKind: serviceKind,
                 counterpartName: buyer.name,
+                focus: .standard,
+                preferredProviderID: nil,
+                preferredReplacementStrategy: store.currentUser.conciergeReplacementStrategy,
                 currentBooking: booking
             )
 
@@ -5575,10 +6906,18 @@ private struct SellView: View {
             isSystem: true
         )
 
-        sellerHubAlert = SellerHubAlert(
-            title: "Booking saved",
-            message: outcome.noticeMessage
-        )
+        if let batchReviewReturnContext = context.batchReviewReturnContext {
+            reopenSellerBatchReview(
+                batchReviewReturnContext,
+                successTitle: "Booking saved",
+                successMessage: outcome.noticeMessage
+            )
+        } else {
+            sellerHubAlert = SellerHubAlert(
+                title: "Booking saved",
+                message: outcome.noticeMessage
+            )
+        }
     }
 
     private func confirmSellerConciergeProvider(
@@ -5608,10 +6947,125 @@ private struct SellView: View {
             isSystem: true
         )
 
-        sellerHubAlert = SellerHubAlert(
-            title: "Provider confirmed",
-            message: outcome.noticeMessage
+        if let batchReviewReturnContext = context.batchReviewReturnContext {
+            reopenSellerBatchReview(
+                batchReviewReturnContext,
+                successTitle: "Provider confirmed",
+                successMessage: outcome.noticeMessage
+            )
+        } else {
+            sellerHubAlert = SellerHubAlert(
+                title: "Provider confirmed",
+                message: outcome.noticeMessage
+            )
+        }
+    }
+
+    private func logSellerConciergeFollowUp(
+        context: PostSaleConciergeBookingContext
+    ) {
+        guard let offer = store.offer(id: context.offerID),
+              let buyer = store.user(id: offer.buyerID),
+              let outcome = store.logPostSaleConciergeFollowUp(
+                offerID: context.offerID,
+                userID: store.currentUserID,
+                serviceKind: context.serviceKind,
+                note: ""
+              ) else {
+            sellerHubAlert = SellerHubAlert(
+                title: "Follow-up unavailable",
+                message: "That concierge booking is not ready for provider follow-up right now."
+            )
+            return
+        }
+
+        messaging.sendMessage(
+            listing: context.listing,
+            from: store.currentUser,
+            to: buyer,
+            body: outcome.threadMessage,
+            isSystem: true
         )
+
+        if let batchReviewReturnContext = context.batchReviewReturnContext {
+            reopenSellerBatchReview(
+                batchReviewReturnContext,
+                successTitle: "Follow-up logged",
+                successMessage: outcome.noticeMessage
+            )
+        } else {
+            sellerHubAlert = SellerHubAlert(
+                title: "Follow-up logged",
+                message: outcome.noticeMessage
+            )
+        }
+    }
+
+    private func snoozeSellerConciergeReminder(
+        context: PostSaleConciergeBookingContext
+    ) {
+        guard let offer = store.offer(id: context.offerID),
+              let buyer = store.user(id: offer.buyerID),
+              let outcome = store.snoozePostSaleConciergeFollowUp(
+                offerID: context.offerID,
+                userID: store.currentUserID,
+                serviceKind: context.serviceKind,
+                until: Date().addingTimeInterval(60 * 60 * 24)
+              ) else {
+            sellerHubAlert = SellerHubAlert(
+                title: "Snooze unavailable",
+                message: "That concierge follow-up cannot be snoozed right now."
+            )
+            return
+        }
+
+        messaging.sendMessage(
+            listing: context.listing,
+            from: store.currentUser,
+            to: buyer,
+            body: outcome.threadMessage,
+            isSystem: true
+        )
+
+        if let batchReviewReturnContext = context.batchReviewReturnContext {
+            reopenSellerBatchReview(
+                batchReviewReturnContext,
+                successTitle: "Reminder snoozed",
+                successMessage: outcome.noticeMessage
+            )
+        } else {
+            sellerHubAlert = SellerHubAlert(
+                title: "Reminder snoozed",
+                message: outcome.noticeMessage
+            )
+        }
+    }
+
+    private func openSellerConciergeResolution(
+        context: PostSaleConciergeBookingContext,
+        mode: PostSaleConciergeResolutionMode
+    ) {
+        guard let offer = store.offer(id: context.offerID),
+              let buyer = store.user(id: offer.buyerID),
+              let booking = offer.conciergeBooking(for: context.serviceKind) else {
+            sellerHubAlert = SellerHubAlert(
+                title: "Review unavailable",
+                message: "That concierge booking is no longer available for a review update."
+            )
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            conciergeResolutionContext = PostSaleConciergeResolutionContext(
+                offerID: offer.id,
+                listing: context.listing,
+                serviceKind: context.serviceKind,
+                counterpartName: buyer.name,
+                booking: booking,
+                mode: mode,
+                batchReviewReturnContext: context.batchReviewReturnContext
+            )
+        }
     }
 
     private func openSellerConciergeQuote(
@@ -6103,10 +7557,18 @@ private struct SellView: View {
             isSystem: true
         )
 
-        sellerHubAlert = SellerHubAlert(
-            title: successTitle,
-            message: outcome.noticeMessage
-        )
+        if let batchReviewReturnContext = context.batchReviewReturnContext {
+            reopenSellerBatchReview(
+                batchReviewReturnContext,
+                successTitle: successTitle,
+                successMessage: outcome.noticeMessage
+            )
+        } else {
+            sellerHubAlert = SellerHubAlert(
+                title: successTitle,
+                message: outcome.noticeMessage
+            )
+        }
     }
 
     private func handleImportedConciergeInvoice(_ result: Result<[URL], Error>) {
@@ -6379,6 +7841,7 @@ private struct AccountView: View {
                     }
                     currentAccountCard
                     reminderControlCard
+                    replacementStrategyControlCard
                     verificationCenterCard
                     safetyControlsCard
                     dataAndPrivacyCard
@@ -6494,6 +7957,10 @@ private struct AccountView: View {
                 Text("Concierge reminder mode: \(store.currentUser.conciergeReminderIntensity.title)")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(BrandPalette.navy)
+
+                Text("Concierge backup mode: \(store.currentUser.conciergeReplacementStrategy.title)")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(BrandPalette.teal)
             }
         }
         .padding(20)
@@ -6567,6 +8034,50 @@ private struct AccountView: View {
                     supporting: dashboard.supportingLine
                 )
             }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(BrandPalette.card)
+        )
+    }
+
+    private var replacementStrategyControlCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Backup provider strategy")
+                .font(.headline)
+
+            Text("Choose how Real O Who should rank concierge replacement providers when a settled-deal booking needs a safer backup.")
+                .foregroundStyle(.secondary)
+
+            Picker(
+                "Concierge backup mode",
+                selection: Binding(
+                    get: { store.currentUser.conciergeReplacementStrategy },
+                    set: { newValue in
+                        store.updateConciergeReplacementStrategy(
+                            userID: store.currentUserID,
+                            strategy: newValue
+                        )
+                    }
+                )
+            ) {
+                ForEach(ConciergeReplacementStrategy.allCases) { strategy in
+                    Text(strategy.title).tag(strategy)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Text(store.currentUser.conciergeReplacementStrategy.detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            HighlightInformationCard(
+                title: "\(store.currentUser.conciergeReplacementStrategy.title) mode is active",
+                message: "Queue-generated backup suggestions and replacement sheets now open using this preference by default.",
+                supporting: "You can still override the ranking inside any replacement flow without changing the rest of the app."
+            )
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -9266,12 +10777,21 @@ private struct LegalSearchSheet: View {
 private struct PostSaleConciergeSheet: View {
     @EnvironmentObject private var store: MarketplaceStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
     let listing: PropertyListing
     let serviceKind: PostSaleConciergeServiceKind
     let counterpartName: String
+    let focus: PostSaleConciergeBookingFocus
+    let preferredProviderID: String?
+    let preferredReplacementStrategy: ConciergeReplacementStrategy
     let currentBooking: PostSaleConciergeBooking?
+    let manualReviewContext: ConciergeManualReviewContext?
     let onConfirmProvider: ((String) -> Void)?
+    let onLogFollowUp: (() -> Void)?
+    let onSnoozeReminder: (() -> Void)?
+    let onLogIssue: (() -> Void)?
+    let onResolveIssue: (() -> Void)?
     let onSubmit: (PostSaleConciergeProvider, Date, String, Int?) -> Void
 
     @State private var results: [PostSaleConciergeProvider] = []
@@ -9282,26 +10802,46 @@ private struct PostSaleConciergeSheet: View {
     @State private var notes: String
     @State private var estimatedCostText: String
     @State private var providerConfirmationNote: String
+    @State private var replacementStrategy: ConciergeReplacementStrategy
 
     init(
         listing: PropertyListing,
         serviceKind: PostSaleConciergeServiceKind,
         counterpartName: String,
+        focus: PostSaleConciergeBookingFocus = .standard,
+        preferredProviderID: String? = nil,
+        preferredReplacementStrategy: ConciergeReplacementStrategy = .smart,
         currentBooking: PostSaleConciergeBooking?,
+        manualReviewContext: ConciergeManualReviewContext? = nil,
         onConfirmProvider: ((String) -> Void)? = nil,
+        onLogFollowUp: (() -> Void)? = nil,
+        onSnoozeReminder: (() -> Void)? = nil,
+        onLogIssue: (() -> Void)? = nil,
+        onResolveIssue: (() -> Void)? = nil,
         onSubmit: @escaping (PostSaleConciergeProvider, Date, String, Int?) -> Void
     ) {
         self.listing = listing
         self.serviceKind = serviceKind
         self.counterpartName = counterpartName
+        self.focus = focus
+        self.preferredProviderID = preferredProviderID
+        self.preferredReplacementStrategy = preferredReplacementStrategy
         self.currentBooking = currentBooking
+        self.manualReviewContext = manualReviewContext
         self.onConfirmProvider = onConfirmProvider
+        self.onLogFollowUp = onLogFollowUp
+        self.onSnoozeReminder = onSnoozeReminder
+        self.onLogIssue = onLogIssue
+        self.onResolveIssue = onResolveIssue
         self.onSubmit = onSubmit
-        _selectedProviderID = State(initialValue: currentBooking?.provider.id)
+        _selectedProviderID = State(
+            initialValue: preferredProviderID ?? (focus == .replacement ? nil : currentBooking?.provider.id)
+        )
         _scheduledFor = State(initialValue: currentBooking?.scheduledFor ?? Self.defaultScheduleDate(for: serviceKind))
         _notes = State(initialValue: currentBooking?.notes ?? "")
         _estimatedCostText = State(initialValue: currentBooking?.estimatedCost.map(String.init) ?? "")
         _providerConfirmationNote = State(initialValue: currentBooking?.providerConfirmationNote ?? "")
+        _replacementStrategy = State(initialValue: preferredReplacementStrategy)
     }
 
     var body: some View {
@@ -9320,10 +10860,154 @@ private struct PostSaleConciergeSheet: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
                             HighlightInformationCard(
-                                title: "\(serviceKind.title) booking",
-                                message: "Book or switch a local provider directly from the settled archive so the move, clean, utility connection, or key handover stays attached to this closed-out sale.",
+                                title: focus == .replacement ? "Switch \(serviceKind.title.lowercased()) provider" : "\(serviceKind.title) booking",
+                                message: focus == .replacement
+                                    ? "Choose a replacement provider directly from the settled archive. The outgoing provider trail, follow-ups, receipts, and issue history stay attached to this closed-out sale."
+                                    : "Book or switch a local provider directly from the settled archive so the move, clean, utility connection, or key handover stays attached to this closed-out sale.",
                                 supporting: "\(listing.address.fullLine) • Coordinating with \(counterpartName)"
                             )
+
+                            if focus == .replacement, let currentBooking {
+                                HighlightInformationCard(
+                                    title: "Replacement mode is on",
+                                    message: "Pick a new \(serviceKind.title.lowercased()) provider below to replace \(currentBooking.provider.name). The current provider remains visible here so you can compare before switching.",
+                                    supporting: "The replacement will keep a full audit trail in the archive."
+                                )
+                            }
+
+                            if let manualReviewContext {
+                                HighlightInformationCard(
+                                    title: manualReviewContext.title,
+                                    message: manualReviewContext.message,
+                                    supporting: manualReviewContext.supporting
+                                )
+                            }
+
+                            if shouldShowQuickActionCard, let currentBooking {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text(manualReviewContext == nil ? "Booking actions" : "Manual review actions")
+                                        .font(.headline)
+
+                                    Text(conciergeAttentionRecommendation(for: currentBooking).supporting)
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+
+                                    AdaptiveTagGrid(minimum: 150) {
+                                        if let callURL = conciergeProviderCallURL(currentBooking.provider) {
+                                            Button("Call provider") {
+                                                openURL(callURL)
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .tint(BrandPalette.coral)
+                                        }
+
+                                        if let websiteURL = currentBooking.provider.websiteURL {
+                                            Link("Website", destination: websiteURL)
+                                                .buttonStyle(.bordered)
+                                        }
+
+                                        if let mapsURL = currentBooking.provider.mapsURL {
+                                            Link("Maps", destination: mapsURL)
+                                                .buttonStyle(.bordered)
+                                        }
+
+                                        if canLogFollowUpQuickAction, onLogFollowUp != nil {
+                                            Button("Log follow-up") {
+                                                performQuickAction(onLogFollowUp)
+                                            }
+                                            .buttonStyle(.bordered)
+                                        }
+
+                                        if canSnoozeQuickAction, onSnoozeReminder != nil {
+                                            Button("Snooze 24h") {
+                                                performQuickAction(onSnoozeReminder)
+                                            }
+                                            .buttonStyle(.bordered)
+                                        }
+
+                                        if currentBooking.hasOpenIssue, onResolveIssue != nil {
+                                            Button("Resolve issue") {
+                                                performQuickAction(onResolveIssue)
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .tint(BrandPalette.teal)
+                                        } else if currentBooking.isCancelled == false,
+                                                  currentBooking.isCompleted == false,
+                                                  onLogIssue != nil {
+                                            Button("Log issue") {
+                                                performQuickAction(onLogIssue)
+                                            }
+                                            .buttonStyle(.bordered)
+                                        }
+                                    }
+
+                                    Text("Quick actions close this sheet and update the archive from the active buyer or seller hub.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(18)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .fill(BrandPalette.card)
+                                )
+                            }
+
+                            if focus == .replacement {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text("Ranking strategy")
+                                        .font(.headline)
+
+                                    Picker("Ranking strategy", selection: $replacementStrategy) {
+                                        ForEach(ConciergeReplacementStrategy.allCases) { strategy in
+                                            Text(strategy.title).tag(strategy)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+
+                                    if let currentBooking {
+                                        Text(
+                                            conciergeReplacementStrategySupportingLine(
+                                                strategy: replacementStrategy,
+                                                currentBooking: currentBooking
+                                            )
+                                        )
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(18)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .fill(BrandPalette.card)
+                                )
+
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text("Suggested replacements")
+                                        .font(.headline)
+
+                                    if replacementSuggestions.isEmpty {
+                                        EmptyPanel(message: "No ranked replacement shortlist is ready yet. Refresh the search or keep the current provider if the handover is already back on track.")
+                                    } else {
+                                        Text(replacementSummaryLine)
+                                            .font(.footnote)
+                                            .foregroundStyle(.secondary)
+
+                                        ForEach(replacementSuggestions) { suggestion in
+                                            PostSaleConciergeProviderCard(
+                                                provider: suggestion.provider,
+                                                comparisonLabels: suggestion.labels,
+                                                isSelected: selectedProviderID == suggestion.provider.id,
+                                                actionTitle: selectedProviderID == suggestion.provider.id ? "Selected" : "Choose replacement",
+                                                statusLine: suggestion.statusLine,
+                                                safetySummary: suggestion.safetySummary,
+                                                onSelect: {
+                                                    selectedProviderID = suggestion.provider.id
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
 
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("Schedule")
@@ -9386,7 +11070,11 @@ private struct PostSaleConciergeSheet: View {
                                         provider: currentBooking.provider,
                                         comparisonLabels: providerComparisonLabels(for: currentBooking.provider),
                                         isSelected: selectedProviderID == currentBooking.provider.id,
-                                        actionTitle: selectedProviderID == currentBooking.provider.id ? "Selected" : "Use current provider",
+                                        actionTitle: selectedProviderID == currentBooking.provider.id
+                                            ? "Selected"
+                                            : focus == .replacement
+                                            ? "Keep current provider"
+                                            : "Use current provider",
                                         statusLine: currentBooking.isCancelled
                                             ? "Cancelled \(currentBooking.cancelledAt.map(relativeDateString) ?? "recently")"
                                             : currentBooking.isCompleted
@@ -9394,6 +11082,7 @@ private struct PostSaleConciergeSheet: View {
                                             : currentBooking.isProviderConfirmed
                                             ? "Confirmed \(currentBooking.providerConfirmedAt.map(relativeDateString) ?? "recently")"
                                             : "Booked for \(shortDateString(currentBooking.scheduledFor)) at \(timeString(currentBooking.scheduledFor))",
+                                        safetySummary: nil,
                                         onSelect: {
                                             selectedProviderID = currentBooking.provider.id
                                         }
@@ -9522,8 +11211,12 @@ private struct PostSaleConciergeSheet: View {
                                 EmptyPanel(message: errorMessage)
                             }
 
+                            if let selectedReplacementImpactSummary {
+                                ConciergeReplacementImpactPanel(summary: selectedReplacementImpactSummary)
+                            }
+
                             VStack(alignment: .leading, spacing: 12) {
-                                Text("Nearby providers")
+                                Text(focus == .replacement ? "All nearby alternatives" : "Nearby providers")
                                     .font(.headline)
 
                                 if cheapestProvider != nil || topRatedProvider != nil || fastestProvider != nil {
@@ -9557,16 +11250,23 @@ private struct PostSaleConciergeSheet: View {
                                     }
                                 }
 
-                                if results.isEmpty {
-                                    EmptyPanel(message: "No nearby \(serviceKind.title.lowercased()) providers were found for this suburb yet.")
+                                if displayedResults.isEmpty {
+                                    EmptyPanel(message: focus == .replacement
+                                        ? "No alternate \(serviceKind.title.lowercased()) providers were found for this suburb yet. You can keep the current provider or refresh the search."
+                                        : "No nearby \(serviceKind.title.lowercased()) providers were found for this suburb yet.")
                                 } else {
-                                    ForEach(results) { provider in
+                                    ForEach(displayedResults) { provider in
                                         PostSaleConciergeProviderCard(
                                             provider: provider,
-                                            comparisonLabels: providerComparisonLabels(for: provider),
+                                            comparisonLabels: comparisonLabels(for: provider),
                                             isSelected: selectedProviderID == provider.id,
-                                            actionTitle: selectedProviderID == provider.id ? "Selected" : "Choose provider",
+                                            actionTitle: selectedProviderID == provider.id
+                                                ? "Selected"
+                                                : focus == .replacement
+                                                ? "Choose replacement"
+                                                : "Choose provider",
                                             statusLine: provider.serviceKind.title,
+                                            safetySummary: nil,
                                             onSelect: {
                                                 selectedProviderID = provider.id
                                             }
@@ -9586,7 +11286,7 @@ private struct PostSaleConciergeSheet: View {
                     Button("Close") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(currentBooking == nil ? "Book" : "Save") {
+                    Button(confirmationButtonTitle) {
                         if let provider = selectedProvider {
                             onSubmit(provider, scheduledFor, notes, Int(estimatedCostText.filter(\.isNumber)))
                             dismiss()
@@ -9604,6 +11304,12 @@ private struct PostSaleConciergeSheet: View {
         .task {
             await loadResults()
         }
+        .onChange(of: replacementStrategy) { _, newValue in
+            store.updateConciergeReplacementStrategy(
+                userID: store.currentUserID,
+                strategy: newValue
+            )
+        }
     }
 
     private var selectedProvider: PostSaleConciergeProvider? {
@@ -9613,8 +11319,21 @@ private struct PostSaleConciergeSheet: View {
         return results.first { $0.id == selectedProviderID }
     }
 
+    private var displayedResults: [PostSaleConciergeProvider] {
+        guard focus == .replacement, let currentBooking else {
+            return results
+        }
+
+        return rankedConciergeReplacementProviders(
+            for: currentBooking,
+            listing: listing,
+            candidates: results,
+            strategy: replacementStrategy
+        )
+    }
+
     private var cheapestProvider: PostSaleConciergeProvider? {
-        let match = results
+        let match = displayedResults
             .compactMap { provider in
                 provider.indicativePriceLow.map { (price: $0, provider: provider) }
             }
@@ -9624,7 +11343,7 @@ private struct PostSaleConciergeSheet: View {
     }
 
     private var topRatedProvider: PostSaleConciergeProvider? {
-        let match = results
+        let match = displayedResults
             .compactMap { provider in
                 provider.rating.map { (rating: $0, provider: provider) }
             }
@@ -9634,7 +11353,7 @@ private struct PostSaleConciergeSheet: View {
     }
 
     private var fastestProvider: PostSaleConciergeProvider? {
-        let match = results
+        let match = displayedResults
             .compactMap { provider in
                 provider.estimatedResponseHours.map { (hours: $0, provider: provider) }
             }
@@ -9643,7 +11362,132 @@ private struct PostSaleConciergeSheet: View {
         return match?.provider
     }
 
-    private func providerComparisonLabels(for provider: PostSaleConciergeProvider) -> [String] {
+    private var confirmationButtonTitle: String {
+        guard currentBooking != nil else {
+            return "Book"
+        }
+
+        guard focus == .replacement else {
+            return "Save"
+        }
+
+        if selectedProvider?.id == currentBooking?.provider.id {
+            return "Keep provider"
+        }
+
+        return "Switch provider"
+    }
+
+    private var replacementSuggestions: [ConciergeReplacementSuggestion] {
+        guard focus == .replacement, let currentBooking else {
+            return []
+        }
+
+        return Array(displayedResults.prefix(3))
+            .map { provider in
+                conciergeReplacementSuggestion(
+                    for: provider,
+                    currentBooking: currentBooking,
+                    listing: listing,
+                    rankedCandidates: displayedResults,
+                    strategy: replacementStrategy
+                )
+            }
+    }
+
+    private var replacementSummaryLine: String {
+        guard let currentBooking else {
+            return "Ranked by provider quality, response speed, and value for this handover."
+        }
+
+        return conciergeReplacementStrategySupportingLine(
+            strategy: replacementStrategy,
+            currentBooking: currentBooking
+        )
+    }
+
+    private var selectedReplacementImpactSummary: ConciergeReplacementImpactSummary? {
+        guard focus == .replacement,
+              let currentBooking,
+              let selectedProvider else {
+            return nil
+        }
+
+        let parsedEstimatedCost = Int(estimatedCostText.filter(\.isNumber))
+        let safetySummary: ConciergeReplacementSafetySummary?
+        if selectedProvider.id == currentBooking.provider.id {
+            safetySummary = nil
+        } else {
+            safetySummary = conciergeReplacementSafetySummary(
+                for: selectedProvider,
+                currentBooking: currentBooking,
+                listing: listing,
+                score: conciergeReplacementRankingScore(
+                    for: selectedProvider,
+                    currentBooking: currentBooking,
+                    listing: listing,
+                    strategy: replacementStrategy
+                ),
+                strategy: replacementStrategy
+            )
+        }
+
+        return conciergeReplacementImpactSummary(
+            for: selectedProvider,
+            currentBooking: currentBooking,
+            listing: listing,
+            scheduledFor: scheduledFor,
+            notes: notes,
+            estimatedCost: parsedEstimatedCost,
+            safetySummary: safetySummary
+        )
+    }
+
+    private var canLogFollowUpQuickAction: Bool {
+        guard let currentBooking else {
+            return false
+        }
+
+        return currentBooking.isCancelled == false &&
+            currentBooking.isCompleted == false &&
+            currentBooking.isProviderConfirmed == false &&
+            (currentBooking.needsResponseFollowUp ||
+             currentBooking.isResponseDueSoon ||
+             currentBooking.followUpCountValue > 0)
+    }
+
+    private var canSnoozeQuickAction: Bool {
+        guard let currentBooking else {
+            return false
+        }
+
+        return currentBooking.isCancelled == false &&
+            currentBooking.isCompleted == false &&
+            currentBooking.isProviderConfirmed == false &&
+            (currentBooking.needsResponseFollowUp ||
+             currentBooking.isResponseDueSoon ||
+             currentBooking.isReminderSnoozed)
+    }
+
+    private var shouldShowQuickActionCard: Bool {
+        guard let currentBooking else {
+            return false
+        }
+
+        return manualReviewContext != nil ||
+            conciergeProviderCallURL(currentBooking.provider) != nil ||
+            currentBooking.provider.websiteURL != nil ||
+            currentBooking.provider.mapsURL != nil ||
+            (canLogFollowUpQuickAction && onLogFollowUp != nil) ||
+            (canSnoozeQuickAction && onSnoozeReminder != nil) ||
+            (currentBooking.hasOpenIssue && onResolveIssue != nil) ||
+            (currentBooking.isCancelled == false &&
+             currentBooking.isCompleted == false &&
+             currentBooking.hasOpenIssue == false &&
+             onLogIssue != nil)
+    }
+
+    private func comparisonLabels(for provider: PostSaleConciergeProvider) -> [String] {
         var labels: [String] = []
 
         if provider.id == cheapestProvider?.id {
@@ -9661,6 +11505,22 @@ private struct PostSaleConciergeSheet: View {
         return labels
     }
 
+    private func providerComparisonLabels(for provider: PostSaleConciergeProvider) -> [String] {
+        comparisonLabels(for: provider)
+    }
+
+    private func performQuickAction(_ action: (() -> Void)?) {
+        dismiss()
+
+        guard let action else {
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            action()
+        }
+    }
+
     @MainActor
     private func loadResults() async {
         guard !isLoading else { return }
@@ -9669,8 +11529,15 @@ private struct PostSaleConciergeSheet: View {
 
         do {
             results = try await store.searchPostSaleConciergeProviders(for: listing, serviceKind: serviceKind)
-            if selectedProviderID == nil {
-                selectedProviderID = results.first?.id
+            if selectedProvider == nil {
+                if let preferredProviderID,
+                   results.contains(where: { $0.id == preferredProviderID }) {
+                    selectedProviderID = preferredProviderID
+                } else if focus == .replacement {
+                    selectedProviderID = replacementSuggestions.first?.provider.id
+                } else {
+                    selectedProviderID = results.first?.id
+                }
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -10288,6 +12155,7 @@ private struct PostSaleConciergeProviderCard: View {
     let isSelected: Bool
     let actionTitle: String
     let statusLine: String
+    let safetySummary: ConciergeReplacementSafetySummary?
     let onSelect: () -> Void
 
     var body: some View {
@@ -10333,6 +12201,10 @@ private struct PostSaleConciergeProviderCard: View {
                     InfoPill(label: specialty)
                 }
                 InfoPill(label: provider.sourceLine)
+            }
+
+            if let safetySummary {
+                ConciergeReplacementSafetyPanel(summary: safetySummary)
             }
 
             Text(provider.searchSummary)
@@ -14134,9 +16006,26 @@ private enum ConciergeAttentionServiceFilter: String, CaseIterable, Identifiable
     }
 }
 
+private enum ConciergeAttentionPrimaryActionKind: Equatable {
+    case switchProvider
+    case callProvider
+    case reviewBooking
+    case viewBooking
+
+    var showsOpenBookingShortcut: Bool {
+        switch self {
+        case .switchProvider, .callProvider:
+            return true
+        case .reviewBooking, .viewBooking:
+            return false
+        }
+    }
+}
+
 private struct ConciergeAttentionRecommendation {
     let title: String
     let supporting: String
+    let primaryActionKind: ConciergeAttentionPrimaryActionKind
     let primaryActionTitle: String
     let tint: Color
     let background: Color
@@ -14295,10 +16184,16 @@ private struct ConciergeAttentionQueueCard: View {
     let canSnooze: Bool
     let canConfirm: Bool
     let canLogIssue: Bool
+    let currentProvider: PostSaleConciergeProvider?
     let providerCallURL: URL?
     let providerWebsiteURL: URL?
     let providerMapsURL: URL?
+    let suggestedReplacement: ConciergeReplacementSuggestion?
+    let isLoadingSuggestedReplacement: Bool
+    let isPreparingSuggestedReplacement: Bool
     let onToggleSelection: () -> Void
+    let onPrimaryAction: () -> Void
+    let onUseSuggestedReplacement: (() -> Void)?
     let onOpenBooking: () -> Void
     let onLogFollowUp: () -> Void
     let onSnooze: () -> Void
@@ -14309,6 +16204,30 @@ private struct ConciergeAttentionQueueCard: View {
 
     private var bookingButtonTitle: String {
         recommendation?.primaryActionTitle ?? "Open booking"
+    }
+
+    private var showsOpenBookingShortcut: Bool {
+        recommendation?.primaryActionKind.showsOpenBookingShortcut ?? false
+    }
+
+    private var showsSuggestedReplacementAction: Bool {
+        recommendation?.primaryActionKind == .switchProvider && onUseSuggestedReplacement != nil
+    }
+
+    private var suggestedReplacementButtonTitle: String {
+        if isPreparingSuggestedReplacement {
+            return "Finding backup..."
+        }
+
+        if let suggestedReplacement {
+            return "Use \(suggestedReplacement.provider.name)"
+        }
+
+        if isLoadingSuggestedReplacement {
+            return "Finding backup..."
+        }
+
+        return "Use best backup"
     }
 
     var body: some View {
@@ -14445,11 +16364,137 @@ private struct ConciergeAttentionQueueCard: View {
                 }
             }
 
+            if showsSuggestedReplacementAction, let onUseSuggestedReplacement {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Suggested backup")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+
+                    if let suggestedReplacement {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if let currentProvider {
+                                HStack(alignment: .top, spacing: 12) {
+                                    ConciergeQueueProviderSnapshot(
+                                        title: "Current",
+                                        provider: currentProvider,
+                                        accent: BrandPalette.navy
+                                    )
+
+                                    ConciergeQueueProviderSnapshot(
+                                        title: "Backup",
+                                        provider: suggestedReplacement.provider,
+                                        accent: BrandPalette.teal
+                                    )
+                                }
+
+                                let comparisonLines = conciergeReplacementComparisonLines(
+                                    currentProvider: currentProvider,
+                                    suggestedProvider: suggestedReplacement.provider
+                                )
+                                if !comparisonLines.isEmpty {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        ForEach(Array(comparisonLines.enumerated()), id: \.offset) { _, line in
+                                            HStack(alignment: .top, spacing: 8) {
+                                                Circle()
+                                                    .fill(BrandPalette.teal.opacity(0.7))
+                                                    .frame(width: 6, height: 6)
+                                                    .padding(.top, 5)
+
+                                                Text(line)
+                                                    .font(.footnote)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            ConciergeReplacementSafetyPanel(
+                                summary: suggestedReplacement.safetySummary,
+                                compact: true
+                            )
+
+                            ConciergeReplacementImpactPanel(
+                                summary: suggestedReplacement.impactSummary,
+                                compact: true
+                            )
+
+                            HStack(alignment: .top, spacing: 10) {
+                                Circle()
+                                    .fill(BrandPalette.teal.opacity(0.14))
+                                    .frame(width: 28, height: 28)
+                                    .overlay {
+                                        Image(systemName: "sparkles")
+                                            .font(.caption.weight(.bold))
+                                            .foregroundStyle(BrandPalette.teal)
+                                    }
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(suggestedReplacement.provider.name)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text(suggestedReplacement.statusLine)
+                                        .font(.footnote.weight(.semibold))
+                                        .foregroundStyle(BrandPalette.teal)
+                                    if let responseLine = conciergeProviderResponseLine(suggestedReplacement.provider) {
+                                        Text(responseLine)
+                                            .font(.footnote)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+
+                                Spacer(minLength: 0)
+                            }
+
+                            AdaptiveTagGrid(minimum: 120) {
+                                ForEach(Array(suggestedReplacement.labels.prefix(4)), id: \.self) { label in
+                                    InfoPill(label: label)
+                                }
+                            }
+                        }
+                        .padding(14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(BrandPalette.teal.opacity(0.08))
+                        )
+                    } else {
+                        Text(
+                            isLoadingSuggestedReplacement
+                                ? "Ranking the strongest local replacement now so the switch can start from the queue."
+                                : "Searches local alternatives and opens replacement mode with the top backup preselected."
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button(suggestedReplacementButtonTitle) {
+                            onUseSuggestedReplacement()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isPreparingSuggestedReplacement || isLoadingSuggestedReplacement)
+
+                        if suggestedReplacement != nil {
+                            Text("Opens replacement mode with this provider already selected.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
             HStack(spacing: 10) {
                 Button(bookingButtonTitle) {
-                    onOpenBooking()
+                    onPrimaryAction()
                 }
                 .buttonStyle(.borderedProminent)
+
+                if showsOpenBookingShortcut {
+                    Button("Open booking") {
+                        onOpenBooking()
+                    }
+                    .buttonStyle(.bordered)
+                }
 
                 Button("Log follow-up") {
                     onLogFollowUp()
@@ -14501,6 +16546,3914 @@ private struct ConciergeAttentionQueueCard: View {
                     lineWidth: isSelected ? 2 : 1
                 )
         )
+    }
+}
+
+private struct ConciergeQueueProviderSnapshot: View {
+    let title: String
+    let provider: PostSaleConciergeProvider
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(accent)
+
+            Text(provider.name)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+
+            if let responseLine = conciergeProviderResponseLine(provider) {
+                Text(responseLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let ratingLine = conciergeProviderRatingLine(provider) {
+                Text(ratingLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let priceGuide = conciergeProviderPriceGuide(provider) {
+                Text(priceGuide)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(accent.opacity(0.08))
+        )
+    }
+}
+
+private struct ConciergeReplacementSafetyPanel: View {
+    let summary: ConciergeReplacementSafetySummary
+    var compact: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 8 : 10) {
+            HStack(alignment: .top, spacing: 12) {
+                Circle()
+                    .fill(summary.tint.opacity(0.14))
+                    .frame(width: compact ? 28 : 32, height: compact ? 28 : 32)
+                    .overlay {
+                        Image(systemName: "checkmark.shield.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(summary.tint)
+                    }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(summary.title)
+                        .font(compact ? .caption.weight(.bold) : .subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+
+                    Text(summary.summary)
+                        .font(compact ? .footnote : .subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+
+                Text(summary.scoreText)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(summary.tint)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(summary.tint.opacity(0.12))
+                    )
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(summary.reasons.prefix(compact ? 2 : 3).enumerated()), id: \.offset) { _, line in
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle()
+                            .fill(summary.tint.opacity(0.7))
+                            .frame(width: 6, height: 6)
+                            .padding(.top, 5)
+
+                        Text(line)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(compact ? 12 : 14)
+        .background(
+            RoundedRectangle(cornerRadius: compact ? 14 : 18, style: .continuous)
+                .fill(summary.tint.opacity(compact ? 0.08 : 0.06))
+        )
+    }
+}
+
+private struct ConciergeReplacementImpactPanel: View {
+    let summary: ConciergeReplacementImpactSummary
+    var compact: Bool = false
+
+    private var maxItemsPerSection: Int {
+        compact ? 1 : 3
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 8 : 10) {
+            HStack(alignment: .top, spacing: 12) {
+                Circle()
+                    .fill(summary.tint.opacity(0.14))
+                    .frame(width: compact ? 28 : 32, height: compact ? 28 : 32)
+                    .overlay {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(summary.tint)
+                    }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(summary.title)
+                        .font(compact ? .caption.weight(.bold) : .subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+
+                    Text(summary.supporting)
+                        .font(compact ? .footnote : .subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            impactSection("Carries forward", lines: summary.keeps, tint: BrandPalette.teal)
+            impactSection("Restarts", lines: summary.resets, tint: BrandPalette.coral)
+            impactSection("Stays on file", lines: summary.archived, tint: BrandPalette.navy)
+            impactSection("Risk reduced", lines: summary.riskReduced, tint: summary.tint)
+        }
+        .padding(compact ? 12 : 14)
+        .background(
+            RoundedRectangle(cornerRadius: compact ? 14 : 18, style: .continuous)
+                .fill(summary.tint.opacity(compact ? 0.08 : 0.06))
+        )
+    }
+
+    @ViewBuilder
+    private func impactSection(_ title: String, lines: [String], tint: Color) -> some View {
+        let visibleLines = Array(lines.prefix(maxItemsPerSection))
+        if visibleLines.isEmpty == false {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(tint)
+
+                ForEach(Array(visibleLines.enumerated()), id: \.offset) { _, line in
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle()
+                            .fill(tint.opacity(0.7))
+                            .frame(width: 6, height: 6)
+                            .padding(.top, 5)
+
+                        Text(line)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ConciergeBatchReplacementReviewSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: MarketplaceStore
+    @EnvironmentObject private var messaging: EncryptedMessagingService
+
+    let context: ConciergeBatchReplacementReviewContext
+    let onConfirm: ([ConciergeBatchReplacementReviewEntry], ConciergeBatchReviewReturnContext) -> Void
+    let onOpenEntry: (ConciergeBatchReplacementReviewEntry, ConciergeBatchReviewReturnContext) -> Void
+    let onCloseEntries: ([String], Int) -> Void
+
+    @State private var reviewEntries: [ConciergeBatchReplacementReviewEntry]
+    @State private var isResolvingMissingSuggestions = false
+    @State private var isApplying = false
+    @State private var sectionActionAlert: ConciergeBatchReviewStatusAlert?
+    @State private var rankingUpdateSummary: ConciergeBatchReviewRankingUpdateSummary?
+    @State private var focusedRecoveryEntryID: String?
+    @State private var stagedReadyEntryIDs: [String] = []
+    @State private var approvedStagedEntryFingerprints: [String: String] = [:]
+    @State private var invalidatedStagedEntryIDs: [String] = []
+    @State private var refreshHighlightedStagedEntryIDs: [String] = []
+    @State private var reviewedRefreshHighlightEntryIDs: [String] = []
+    @State private var appliedRefreshHighlightEntryIDs: [String] = []
+    @State private var refreshOutcomeJumpLaneProgress: ConciergeBatchReviewRefreshLaneProgress?
+    @State private var visitedRefreshBookingEntryIDs: [String] = []
+    @State private var reactivatedRefreshBookingEntryIDs: [String] = []
+    @State private var reactivationCompletionReviewLastItemID: String?
+    @State private var reviewedReactivationCompletionItemIDs: [String] = []
+    @State private var hasHiddenCompletedBookingLane = false
+    @State private var hasActiveBookingLaneReactivation = false
+    @State private var hasDismissedBookingLaneReactivationCompletion = false
+    @State private var approvalRefreshCloseoutSummary: ConciergeBatchReviewApprovalRefreshCloseoutSummary?
+    @State private var hasClosedApprovalRefreshSummary = false
+    @State private var hasDismissedApprovalRefreshCloseoutSummary = false
+
+    private let stagedReviewAnchorID = "concierge-batch-staged-review-anchor"
+
+    init(
+        context: ConciergeBatchReplacementReviewContext,
+        onConfirm: @escaping ([ConciergeBatchReplacementReviewEntry], ConciergeBatchReviewReturnContext) -> Void,
+        onOpenEntry: @escaping (ConciergeBatchReplacementReviewEntry, ConciergeBatchReviewReturnContext) -> Void,
+        onCloseEntries: @escaping ([String], Int) -> Void
+    ) {
+        self.context = context
+        self.onConfirm = onConfirm
+        self.onOpenEntry = onOpenEntry
+        self.onCloseEntries = onCloseEntries
+        _reviewEntries = State(initialValue: context.entries)
+        _stagedReadyEntryIDs = State(initialValue: context.initialStagedEntryIDs)
+        _approvedStagedEntryFingerprints = State(initialValue: context.initialApprovedStagedEntryFingerprints)
+        _refreshHighlightedStagedEntryIDs = State(initialValue: context.initialRefreshHighlightedStagedEntryIDs)
+        _visitedRefreshBookingEntryIDs = State(initialValue: context.initialVisitedRefreshBookingEntryIDs)
+        _reactivatedRefreshBookingEntryIDs = State(initialValue: context.initialReactivatedRefreshBookingEntryIDs)
+        _reactivationCompletionReviewLastItemID = State(initialValue: context.initialReactivationCompletionReviewLastItemID)
+        _reviewedReactivationCompletionItemIDs = State(initialValue: context.initialReviewedReactivationCompletionItemIDs)
+        _hasHiddenCompletedBookingLane = State(initialValue: context.initialHasHiddenCompletedBookingLane)
+        _hasActiveBookingLaneReactivation = State(initialValue: context.initialHasActiveBookingLaneReactivation)
+        _hasDismissedBookingLaneReactivationCompletion = State(initialValue: context.initialHasDismissedBookingLaneReactivationCompletion)
+        _refreshOutcomeJumpLaneProgress = State(initialValue: nil)
+        _invalidatedStagedEntryIDs = State(
+            initialValue: conciergeBatchReviewInvalidatedStagedEntryIDs(
+                entries: context.entries,
+                stagedEntryIDs: context.initialStagedEntryIDs,
+                approvalFingerprints: context.initialApprovedStagedEntryFingerprints
+            )
+        )
+    }
+
+    private var readyEntries: [ConciergeBatchReplacementReviewEntry] {
+        reviewEntries.filter(\.canApplySuggestedReplacement)
+    }
+
+    private var loadingEntries: [ConciergeBatchReplacementReviewEntry] {
+        reviewEntries.filter(\.isLoadingSuggestion)
+    }
+
+    private var manualReviewEntries: [ConciergeBatchReplacementReviewEntry] {
+        reviewEntries.filter { $0.isLoadingSuggestion == false && $0.canApplySuggestedReplacement == false }
+    }
+
+    private var stagedReadyEntries: [ConciergeBatchReplacementReviewEntry] {
+        entries(matching: stagedReadyEntryIDs).filter(\.canApplySuggestedReplacement)
+    }
+
+    private var approvedStagedEntries: [ConciergeBatchReplacementReviewEntry] {
+        stagedReadyEntries.filter { entry in
+            approvedStagedEntryFingerprints[entry.id] == conciergeBatchReviewStagedApprovalFingerprint(for: entry)
+        }
+    }
+
+    private var pendingStagedEntries: [ConciergeBatchReplacementReviewEntry] {
+        let approvedIDs = Set(approvedStagedEntries.map(\.id))
+        return stagedReadyEntries.filter { approvedIDs.contains($0.id) == false }
+    }
+
+    private var invalidatedStagedEntries: [ConciergeBatchReplacementReviewEntry] {
+        let invalidatedIDs = Set(invalidatedStagedEntryIDs)
+        return pendingStagedEntries.filter { invalidatedIDs.contains($0.id) }
+    }
+
+    private var unstagedReadyEntries: [ConciergeBatchReplacementReviewEntry] {
+        let stagedIDs = Set(stagedReadyEntries.map(\.id))
+        return readyEntries.filter { stagedIDs.contains($0.id) == false }
+    }
+
+    private var stagedReviewNotes: [ConciergeBatchReviewStagedNote] {
+        let approvedIDs = Set(approvedStagedEntries.map(\.id))
+        let invalidatedIDs = Set(invalidatedStagedEntries.map(\.id))
+        let refreshHighlightedIDs = Set(refreshHighlightedStagedEntries.map(\.id))
+        return stagedReadyEntries.compactMap { entry in
+            conciergeBatchReviewStagedNote(
+                for: entry,
+                isApproved: approvedIDs.contains(entry.id),
+                isInvalidated: invalidatedIDs.contains(entry.id),
+                isRefreshHighlighted: refreshHighlightedIDs.contains(entry.id)
+            )
+        }
+    }
+
+    private var refreshHighlightedStagedEntries: [ConciergeBatchReplacementReviewEntry] {
+        entries(matching: refreshHighlightedStagedEntryIDs).filter(\.canApplySuggestedReplacement)
+    }
+
+    private var stagedApprovalFeedback: ConciergeBatchReviewStagedApprovalFeedback? {
+        let invalidatedCount = invalidatedStagedEntries.count
+        guard invalidatedCount > 0 else {
+            return nil
+        }
+
+        let preservedCount = approvedStagedEntries.count
+        let title = invalidatedCount == 1
+            ? "1 staged approval needs a quick recheck"
+            : "\(invalidatedCount) staged approvals need a quick recheck"
+
+        var message = "\(invalidatedCount) row\(invalidatedCount == 1 ? "" : "s") moved back to pending because the booking or top-ranked backup changed while the review was open."
+        if preservedCount > 0 {
+            message += " \(preservedCount) approval\(preservedCount == 1 ? "" : "s") still carry forward because the saved switch context is unchanged."
+        }
+
+        return ConciergeBatchReviewStagedApprovalFeedback(
+            title: title,
+            message: message,
+            supporting: "Rows marked recheck required stay staged below until you approve them again or defer them back into the broader ready queue."
+        )
+    }
+
+    private var currentReturnContext: ConciergeBatchReviewReturnContext {
+        ConciergeBatchReviewReturnContext(
+            hubTitle: context.hubTitle,
+            itemIDs: reviewEntries.map(\.id),
+            itemTitlesByID: Dictionary(
+                uniqueKeysWithValues: reviewEntries.map { ($0.id, conciergeBatchReviewRowTitle(for: $0)) }
+            ),
+            itemReferencesByID: Dictionary(
+                uniqueKeysWithValues: reviewEntries.map { ($0.id, conciergeBatchReviewEntryReference(for: $0)) }
+            ),
+            previousSnapshots: reviewEntries.map(conciergeBatchReviewRowSnapshot(for:)),
+            stagedEntryIDs: stagedReadyEntryIDs,
+            stagedApprovalFingerprints: approvedStagedEntryFingerprints,
+            refreshHighlightedStagedEntryIDs: refreshHighlightedStagedEntryIDs,
+            reviewedRefreshHighlightEntryIDs: reviewedRefreshHighlightEntryIDs,
+            appliedRefreshHighlightEntryIDs: appliedRefreshHighlightEntryIDs,
+            visitedRefreshBookingEntryIDs: visitedRefreshBookingEntryIDs,
+            hasHiddenCompletedBookingLane: hasHiddenCompletedBookingLane,
+            hasActiveBookingLaneReactivation: hasActiveBookingLaneReactivation,
+            hasDismissedBookingLaneReactivationCompletion: hasDismissedBookingLaneReactivationCompletion,
+            reactivatedRefreshBookingEntryIDs: reactivatedRefreshBookingEntryIDs,
+            reactivationCompletionReviewLastItemID: reactivationCompletionReviewLastItemID,
+            reviewedReactivationCompletionItemIDs: reviewedReactivationCompletionItemIDs
+        )
+    }
+
+    private var actionableApprovalRefreshItems: [ConciergeBatchReviewApprovalRefreshItem] {
+        guard let summary = activeApprovalRefreshSummary else {
+            return []
+        }
+
+        let pendingIDs = Set(pendingStagedEntries.map(\.id))
+        return summary.immediateReapprovalItems.filter { pendingIDs.contains($0.id) }
+    }
+
+    private var activeApprovalRefreshSummary: ConciergeBatchReviewApprovalRefreshSummary? {
+        guard hasClosedApprovalRefreshSummary == false else {
+            return nil
+        }
+
+        return context.approvalRefreshSummary
+    }
+
+    private var activeApprovalRefreshCloseoutSummary: ConciergeBatchReviewApprovalRefreshCloseoutSummary? {
+        guard hasDismissedApprovalRefreshCloseoutSummary == false else {
+            return nil
+        }
+
+        return approvalRefreshCloseoutSummary
+    }
+
+    private var bookingLaneProgress: ConciergeBatchReviewRefreshLaneProgress? {
+        guard let refreshSummary = context.refreshSummary else {
+            return nil
+        }
+
+        return conciergeBatchReviewBookingLaneProgress(
+            visitedIDs: visitedRefreshBookingEntryIDs,
+            items: refreshSummary.bookingItems
+        )
+    }
+
+    private var isBookingLaneHidden: Bool {
+        hasHiddenCompletedBookingLane && (bookingLaneProgress?.remainingCount == 0)
+    }
+
+    private var showsReactivatedBookingLane: Bool {
+        hasHiddenCompletedBookingLane && (bookingLaneProgress?.remainingCount ?? 0) > 0
+    }
+
+    private var showsBookingLaneReactivationCompletion: Bool {
+        hasActiveBookingLaneReactivation &&
+        bookingLaneProgress?.remainingCount == 0 &&
+        bookingLaneProgress != nil &&
+        isBookingLaneHidden == false &&
+        hasDismissedBookingLaneReactivationCompletion == false
+    }
+
+    private var bookingLaneReactivationCompletionMessage: String? {
+        guard showsBookingLaneReactivationCompletion,
+              let bookingLaneProgress,
+              let lastVisitedItem = context.refreshSummary?.bookingItems.first(where: { $0.id == bookingLaneProgress.lastItemID }) else {
+            return nil
+        }
+
+        return "\(lastVisitedItem.title) was the last reopened booking row to be revisited, so the reactivated booking lane is fully caught up again."
+    }
+
+    private var bookingLaneReactivationCompletionSupporting: String? {
+        guard showsBookingLaneReactivationCompletion else {
+            return nil
+        }
+
+        let titles = context.refreshSummary?.bookingItems
+            .filter { reactivatedRefreshBookingEntryIDs.contains($0.id) }
+            .map(\.title) ?? []
+        guard titles.isEmpty == false else {
+            return nil
+        }
+
+        let visibleTitles = Array(titles.prefix(3))
+        var summary = "Reactivated rows cleared: " + visibleTitles.joined(separator: " • ")
+        if titles.count > visibleTitles.count {
+            summary += " • +\(titles.count - visibleTitles.count) more"
+        }
+        return summary
+    }
+
+    private var reactivationCompletionReviewItems: [ConciergeBatchReviewRefreshOutcomeItem] {
+        let reactivatedIDs = Set(reactivatedRefreshBookingEntryIDs)
+        return context.refreshSummary?.bookingItems.filter { reactivatedIDs.contains($0.id) } ?? []
+    }
+
+    private var pendingReactivationCompletionReviewItems: [ConciergeBatchReviewRefreshOutcomeItem] {
+        let reviewedIDs = Set(reviewedReactivationCompletionItemIDs)
+        return reactivationCompletionReviewItems.filter { reviewedIDs.contains($0.id) == false }
+    }
+
+    private var reviewedReactivationCompletionReviewItems: [ConciergeBatchReviewRefreshOutcomeItem] {
+        let reviewedIDs = Set(reviewedReactivationCompletionItemIDs)
+        return reactivationCompletionReviewItems.filter { reviewedIDs.contains($0.id) }
+    }
+
+    private var isReactivationCompletionReviewComplete: Bool {
+        showsBookingLaneReactivationCompletion &&
+        reactivationCompletionReviewItems.isEmpty == false &&
+        pendingReactivationCompletionReviewItems.isEmpty
+    }
+
+    private var reactivationCompletionReviewActionTitle: String? {
+        guard showsBookingLaneReactivationCompletion,
+              pendingReactivationCompletionReviewItems.isEmpty == false else {
+            return nil
+        }
+
+        if pendingReactivationCompletionReviewItems.count == 1 {
+            return reviewedReactivationCompletionReviewItems.isEmpty ? "Review cleared row" : "Open final cleared row"
+        }
+
+        return reviewedReactivationCompletionReviewItems.isEmpty ? "Review cleared rows" : "Open next cleared row"
+    }
+
+    private var reactivationCompletionReviewProgress: ConciergeBatchReviewRefreshLaneProgress? {
+        guard showsBookingLaneReactivationCompletion,
+              reactivationCompletionReviewItems.isEmpty == false else {
+            return nil
+        }
+
+        let reviewedCount = reviewedReactivationCompletionReviewItems.count
+        let totalCount = reactivationCompletionReviewItems.count
+        let remainingCount = pendingReactivationCompletionReviewItems.count
+        let nextItem = pendingReactivationCompletionReviewItems.first
+        let lastReviewedItem = reviewedReactivationCompletionReviewItems.last
+        let selectedItem = lastReviewedItem ?? nextItem
+        guard let selectedItem else {
+            return nil
+        }
+
+        let title: String
+        let message: String
+        let highlightTitle: String
+        if remainingCount == 0 {
+            title = totalCount == 1
+                ? "Cleared row review complete"
+                : "All \(totalCount) cleared rows reviewed"
+            message = "\(selectedItem.title) completed the final cleared-cycle check. Every reopened booking row from this cycle has now been reviewed once."
+            highlightTitle = "Last reviewed"
+        } else {
+            title = "\(reviewedCount) of \(totalCount) cleared rows reviewed"
+            message = "\(selectedItem.title) was the most recent cleared row reviewed. \(remainingCount) row\(remainingCount == 1 ? "" : "s") still need a final check from this cycle."
+            highlightTitle = "Last reviewed"
+        }
+
+        return ConciergeBatchReviewRefreshLaneProgress(
+            lastItemID: selectedItem.id,
+            title: title,
+            message: message,
+            highlightTitle: highlightTitle,
+            nextItemID: nextItem?.id,
+            remainingCount: remainingCount,
+            totalCount: totalCount
+        )
+    }
+
+    private var approvalRefreshCloseoutJumpTitle: String? {
+        if approvedStagedEntries.isEmpty == false {
+            return approvedStagedEntries.count == 1
+                ? "Jump to approved staged row"
+                : "Jump to approved staged rows"
+        }
+
+        if stagedReadyEntries.isEmpty == false {
+            return "Jump to staged review"
+        }
+
+        return nil
+    }
+
+    private var completionGuidance: ConciergeBatchReviewCompletionGuidance? {
+        guard context.refreshSummary != nil else {
+            return nil
+        }
+
+        return conciergeBatchReviewCompletionGuidance(for: reviewEntries)
+    }
+
+    private var safeToCloseEntryIDs: [String] {
+        completionGuidance?.safeToCloseItems.map(\.id) ?? []
+    }
+
+    private var groupedReviewSections: [ConciergeBatchReviewNextActionSection] {
+        ConciergeBatchReviewNextActionGroup.allCases.compactMap { group in
+            let entries = groupedEntries(for: group)
+            guard entries.isEmpty == false else {
+                return nil
+            }
+
+            return ConciergeBatchReviewNextActionSection(group: group, entries: entries)
+        }
+    }
+
+    private var confirmTitle: String {
+        let readyCount = readyEntries.count
+        if readyCount == 1 {
+            return loadingEntries.isEmpty ? "Apply 1 ranked backup" : "Apply 1 ready backup now"
+        }
+        return loadingEntries.isEmpty
+            ? "Apply \(readyCount) ranked backups"
+            : "Apply \(readyCount) ready backups now"
+    }
+
+    private var recoveryReadyMessage: String? {
+        guard readyEntries.isEmpty == false,
+              loadingEntries.isEmpty == false || manualReviewEntries.isEmpty == false else {
+            return nil
+        }
+
+        var details: [String] = []
+        if loadingEntries.isEmpty == false {
+            details.append("\(loadingEntries.count) still ranking")
+        }
+        if manualReviewEntries.isEmpty == false {
+            details.append("\(manualReviewEntries.count) still need manual review")
+        }
+
+        let suffix = details.isEmpty ? "" : " while " + details.joined(separator: " and ")
+        return "\(readyEntries.count) ranked backup\(readyEntries.count == 1 ? " is" : "s are") ready to switch now\(suffix)."
+    }
+
+    private var reviewHeaderSupporting: String {
+        let strategyTitle = context.strategy.title
+        let strategyDetail = context.strategy.detail
+        return "Using \(strategyTitle) mode: \(strategyDetail)"
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        HighlightInformationCard(
+                            title: "\(context.hubTitle) batch review",
+                            message: "Review the ranked concierge provider switches before Real O Who applies them from the attention queue.",
+                            supporting: reviewHeaderSupporting
+                        )
+
+                        if let refreshSummary = context.refreshSummary {
+                            HighlightInformationCard(
+                                title: refreshSummary.title,
+                                message: refreshSummary.message,
+                                supporting: refreshSummary.supporting
+                            )
+
+                            if refreshSummary.appliedRefreshItems.isEmpty == false || refreshSummary.reviewedRefreshItems.isEmpty == false {
+                                ConciergeBatchReviewRefreshOutcomePanel(
+                                    summary: refreshSummary,
+                                    jumpLaneProgress: refreshOutcomeJumpLaneProgress,
+                                    bookingLaneProgress: bookingLaneProgress,
+                                    visitedBookingItemIDs: visitedRefreshBookingEntryIDs,
+                                    reactivatedBookingItemIDs: reactivatedRefreshBookingEntryIDs,
+                                    isBookingLaneHidden: isBookingLaneHidden,
+                                    showsReactivatedBookingLane: showsReactivatedBookingLane,
+                                    bookingLaneReactivationCompletionMessage: bookingLaneReactivationCompletionMessage,
+                                    bookingLaneReactivationCompletionSupporting: bookingLaneReactivationCompletionSupporting,
+                                    completionReviewActionTitle: reactivationCompletionReviewActionTitle,
+                                    completionReviewProgress: reactivationCompletionReviewProgress,
+                                    completionReviewLastItemID: reactivationCompletionReviewLastItemID,
+                                    isCompletionReviewComplete: isReactivationCompletionReviewComplete,
+                                    onJumpLane: {
+                                        handleRefreshOutcomeJumpLane(
+                                            refreshSummary.jumpItems,
+                                            using: proxy
+                                        )
+                                    },
+                                    onBookingLane: {
+                                        handleRefreshOutcomeBookingLane(
+                                            refreshSummary.bookingItems,
+                                            using: proxy
+                                        )
+                                    },
+                                    onHideCompletedBookingLane: {
+                                        hideCompletedRefreshBookingLane()
+                                    },
+                                    onRestoreBookingLane: {
+                                        restoreRefreshBookingLane()
+                                    },
+                                    onHideCompletedBookingLaneAfterReactivation: {
+                                        hideCompletedRefreshBookingLaneAfterReactivation()
+                                    },
+                                    onDismissBookingLaneReactivationCompletion: {
+                                        dismissBookingLaneReactivationCompletion()
+                                    },
+                                    onReviewClearedCycle: {
+                                        reviewNextClearedReactivationBooking(using: proxy)
+                                    },
+                                    onAction: { item in
+                                        handleRefreshOutcomeItem(item, using: proxy)
+                                    }
+                                )
+                            }
+                        }
+
+                        if let approvalRefreshSummary = activeApprovalRefreshSummary {
+                            ConciergeBatchReviewApprovalRefreshPanel(
+                                summary: approvalRefreshSummary,
+                                actionableItems: actionableApprovalRefreshItems,
+                                onApproveAll: actionableApprovalRefreshItems.isEmpty ? nil : {
+                                    approveApprovalRefreshItems(actionableApprovalRefreshItems.map(\.id))
+                                },
+                                onApproveItem: { item in
+                                    approveApprovalRefreshItems([item.id])
+                                }
+                            )
+                        }
+
+                        if let approvalRefreshCloseoutSummary = activeApprovalRefreshCloseoutSummary {
+                            ConciergeBatchReviewApprovalRefreshCloseoutPanel(
+                                summary: approvalRefreshCloseoutSummary,
+                                jumpTitle: approvalRefreshCloseoutJumpTitle,
+                                onJumpToReview: approvalRefreshCloseoutJumpTitle == nil ? nil : {
+                                    jumpToApprovalRefreshHandoff(using: proxy, dismissCloseoutAfterJump: true)
+                                },
+                                onDismiss: {
+                                    hasDismissedApprovalRefreshCloseoutSummary = true
+                                }
+                            )
+                        }
+
+                    if let rankingUpdateSummary {
+                        HighlightInformationCard(
+                            title: rankingUpdateSummary.title,
+                            message: rankingUpdateSummary.message,
+                            supporting: rankingUpdateSummary.supporting
+                        )
+                    }
+
+                        if let stagedApprovalFeedback {
+                            HighlightInformationCard(
+                                title: stagedApprovalFeedback.title,
+                                message: stagedApprovalFeedback.message,
+                                supporting: stagedApprovalFeedback.supporting
+                            )
+                        }
+
+                        if stagedReadyEntries.isEmpty == false {
+                            ConciergeBatchReviewStagingPanel(
+                                stagedCount: stagedReadyEntries.count,
+                                approvedCount: approvedStagedEntries.count,
+                                pendingCount: pendingStagedEntries.count,
+                                additionalReadyCount: unstagedReadyEntries.count,
+                                refreshHighlightedCount: refreshHighlightedStagedEntries.count,
+                                notes: stagedReviewNotes,
+                                isApplying: isApplying,
+                                onApply: {
+                                    applyStagedReadyBackups()
+                                },
+                                onApproveAllPending: pendingStagedEntries.isEmpty ? nil : {
+                                    approveAllPendingStagedEntries()
+                                },
+                                onDefer: {
+                                    deferStagedReadyBackups()
+                                },
+                                onClearAllRefreshHighlights: refreshHighlightedStagedEntries.isEmpty ? nil : {
+                                    clearAllRefreshHighlights()
+                                },
+                                onApproveNote: { note in
+                                    approveStagedEntry(id: note.id)
+                                },
+                                onClearRefreshHighlightNote: { note in
+                                    clearRefreshHighlight(id: note.id)
+                                },
+                                onRemoveApproval: { note in
+                                    removeStagedApproval(id: note.id)
+                                },
+                                onDeferNote: { note in
+                                    deferStagedEntry(id: note.id)
+                                }
+                            )
+                            .id(stagedReviewAnchorID)
+                        }
+
+                        if stagedReadyEntries.isEmpty == false {
+                            ConciergeBatchReviewRankingFocusPanel(
+                                readyCount: stagedReadyEntries.count,
+                                onJump: {
+                                    focusStagedReadyRows(using: proxy)
+                                }
+                            )
+                        }
+
+                        if let completionGuidance {
+                            ConciergeBatchReviewCompletionGuidancePanel(
+                                guidance: completionGuidance,
+                                closeSafeRowsTitle: safeToCloseEntryIDs.isEmpty
+                                    ? nil
+                                    : (safeToCloseEntryIDs.count == 1 ? "Close 1 safe row" : "Close \(safeToCloseEntryIDs.count) safe rows"),
+                                onCloseSafeRows: safeToCloseEntryIDs.isEmpty ? nil : {
+                                    closeReviewEntries(ids: safeToCloseEntryIDs)
+                                }
+                            )
+                        }
+
+                        if let recoveryReadyMessage {
+                            HighlightInformationCard(
+                                title: "Recovery ready now",
+                                message: recoveryReadyMessage,
+                                supporting: "You can switch the ready provider rows immediately and let the remaining review rows keep updating afterward."
+                            )
+                        }
+
+                        AdaptiveTagGrid(minimum: 150) {
+                            MiniStatPanel(
+                                title: "Selected",
+                                value: "\(reviewEntries.count)",
+                                subtitle: "Provider rows included in this review"
+                            )
+                            MiniStatPanel(
+                                title: "Ready",
+                                value: "\(readyEntries.count)",
+                                subtitle: readyEntries.isEmpty
+                                    ? "No ranked switches ready yet"
+                                    : "Bookings ready to switch now"
+                            )
+                            MiniStatPanel(
+                                title: "Manual",
+                                value: "\(manualReviewEntries.count)",
+                                subtitle: manualReviewEntries.isEmpty
+                                    ? "No manual review blockers"
+                                    : "Rows that still need manual review"
+                            )
+                            if loadingEntries.isEmpty == false {
+                                MiniStatPanel(
+                                    title: "Ranking",
+                                    value: "\(loadingEntries.count)",
+                                    subtitle: "Checking local backup options now"
+                                )
+                            }
+                        }
+
+                        if loadingEntries.isEmpty == false {
+                            HStack(spacing: 12) {
+                                ProgressView()
+                                Text("Ranking the strongest local backup for the remaining selected bookings now.")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(BrandPalette.card)
+                            )
+                        }
+
+                        ForEach(groupedReviewSections) { section in
+                            let sectionActions = sectionActions(for: section)
+                            VStack(alignment: .leading, spacing: 12) {
+                                ConciergeBatchReviewNextActionSectionHeader(
+                                    group: section.group,
+                                    count: section.entries.count,
+                                    actions: sectionActions,
+                                    onAction: { action in
+                                        handleSectionAction(action, for: section)
+                                    }
+                                )
+
+                                ForEach(section.entries) { entry in
+                                    ConciergeBatchReplacementReviewCard(
+                                        entry: entry,
+                                        isAutoFocused: focusedRecoveryEntryID == entry.id,
+                                        isStaged: stagedReadyEntryIDs.contains(entry.id),
+                                        suggestedAction: suggestedAction(for: entry),
+                                        onSuggestedAction: {
+                                            handleSuggestedAction(for: entry)
+                                        }
+                                    )
+                                    .id(entry.id)
+                                }
+                            }
+                        }
+                    }
+                    .padding(20)
+                }
+                .onChange(of: rankingUpdateSummary?.id) { _, _ in
+                    handleRankingUpdate(using: proxy)
+                }
+                .onChange(of: approvalRefreshCloseoutSummary?.id) { _, newValue in
+                    guard newValue != nil else {
+                        return
+                    }
+
+                    jumpToApprovalRefreshHandoff(using: proxy)
+                }
+            }
+            .background(BrandPalette.background.ignoresSafeArea())
+            .navigationTitle(context.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 10) {
+                    if stagedReadyEntries.isEmpty == false {
+                        Button(isApplying ? "Applying..." : stagedConfirmTitle) {
+                            applyStagedReadyBackups()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(BrandPalette.teal)
+                        .disabled(approvedStagedEntries.isEmpty || isApplying)
+
+                        if unstagedReadyEntries.isEmpty == false {
+                            Button(unstagedConfirmTitle) {
+                                applyUnstagedReadyBackups()
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(BrandPalette.teal)
+                            .disabled(unstagedReadyEntries.isEmpty || isApplying)
+                        }
+                    } else {
+                        Button(isApplying ? "Applying..." : confirmTitle) {
+                            applyReadyBackupsNow()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(BrandPalette.teal)
+                        .disabled(readyEntries.isEmpty || isApplying)
+                    }
+
+                    if stagedReadyEntries.isEmpty == false {
+                        Text("Approve the staged rows you trust, defer anything that should go back to the main queue, and only the approved mini-batch will apply.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    } else if loadingEntries.isEmpty == false {
+                        Text("Ready rows can switch now while the remaining review rows keep ranking in the background.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    } else if groupedReviewSections.contains(where: { sectionActions(for: $0).isEmpty == false }) {
+                        Text("Use each section action to clear similar work faster, then return here to finish anything still unresolved.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 12)
+                .background(.ultraThinMaterial)
+            }
+                .task {
+                    syncStagedReadyEntryIDs()
+                    syncBookingLaneReactivationState()
+                    await resolveMissingSuggestions()
+                }
+                .onChange(of: showsReactivatedBookingLane) { _, _ in
+                    syncBookingLaneReactivationState()
+                }
+                .onChange(of: isBookingLaneHidden) { _, _ in
+                    syncBookingLaneReactivationState()
+                }
+                .alert(item: $sectionActionAlert) { alert in
+                    Alert(
+                        title: Text(alert.title),
+                    message: Text(alert.message),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
+        }
+    }
+
+    private func nextActionPlan(
+        for entry: ConciergeBatchReplacementReviewEntry
+    ) -> ConciergeBatchReviewNextActionPlan? {
+        guard let booking = entry.currentBooking else {
+            return ConciergeBatchReviewNextActionPlan(
+                group: .closeNow,
+                title: "No further action needed",
+                supporting: "This provider row has already cleared from the active settled-archive booking, so you can dismiss it from the review now.",
+                buttonTitle: "Close this row",
+                tint: BrandPalette.teal,
+                kind: .closeEntry
+            )
+        }
+
+        if booking.isProviderConfirmed {
+            return ConciergeBatchReviewNextActionPlan(
+                group: .closeNow,
+                title: "Safe to close for now",
+                supporting: "The provider is already confirmed on this booking, so this row can leave the review unless a new issue appears.",
+                buttonTitle: "Close this row",
+                tint: BrandPalette.teal,
+                kind: .closeEntry
+            )
+        }
+
+        if let snoozedUntil = booking.reminderSnoozedUntil,
+           snoozedUntil > .now,
+           booking.needsResponseFollowUp == false,
+           booking.hasOpenIssue == false {
+            return ConciergeBatchReviewNextActionPlan(
+                group: .closeNow,
+                title: "Safe to close until the reminder returns",
+                supporting: "This follow-up is snoozed until \(shortDateString(snoozedUntil)) at \(timeString(snoozedUntil)), so you do not need another action on this row right now.",
+                buttonTitle: "Close this row",
+                tint: BrandPalette.gold,
+                kind: .closeEntry
+            )
+        }
+
+        if entry.canApplySuggestedReplacement {
+            return ConciergeBatchReviewNextActionPlan(
+                group: .applyRankedBackup,
+                title: "Apply this ranked backup now",
+                supporting: "This row is ready to switch immediately, so you can apply the saved replacement without waiting for the full batch.",
+                buttonTitle: "Apply this backup",
+                tint: BrandPalette.teal,
+                kind: .applySuggestedReplacement
+            )
+        }
+
+        if entry.isLoadingSuggestion {
+            return ConciergeBatchReviewNextActionPlan(
+                group: .waitForRanking,
+                title: "Let ranking finish",
+                supporting: "Real O Who is still checking local backup options for this provider thread. Leave this row in the review until the ranked backup arrives.",
+                buttonTitle: nil,
+                tint: BrandPalette.sky,
+                kind: nil
+            )
+        }
+
+        switch conciergeAttentionPrimaryAction(for: booking) {
+        case .switchProvider:
+            return ConciergeBatchReviewNextActionPlan(
+                group: .switchProvider,
+                title: "Open replacement flow",
+                supporting: "This row still needs a manual provider comparison before Real O Who can apply a safe switch.",
+                buttonTitle: "Open replacement flow",
+                tint: booking.hasOpenIssue ? BrandPalette.coral : BrandPalette.navy,
+                kind: .openEntry
+            )
+        case .callProvider:
+            if let snoozedUntil = booking.reminderSnoozedUntil,
+               snoozedUntil > .now {
+                return ConciergeBatchReviewNextActionPlan(
+                    group: .followUp,
+                    title: "Follow up after the snooze window",
+                    supporting: "The reminder is already snoozed until \(shortDateString(snoozedUntil)) at \(timeString(snoozedUntil)). Open the booking if you need to act sooner.",
+                    buttonTitle: "Open booking",
+                    tint: BrandPalette.gold,
+                    kind: .openEntry
+                )
+            }
+
+            return ConciergeBatchReviewNextActionPlan(
+                group: .followUp,
+                title: "Open the booking to follow up",
+                supporting: "This provider thread is overdue, so the next best move is to review the booking and log direct outreach from there.",
+                buttonTitle: "Open booking",
+                tint: BrandPalette.coral,
+                kind: .openEntry
+            )
+        case .reviewBooking:
+            return ConciergeBatchReviewNextActionPlan(
+                group: .reviewBooking,
+                title: "Review this booking",
+                supporting: "Check the saved provider, timing, and reminder state before this row goes back through the queue.",
+                buttonTitle: "Open booking",
+                tint: BrandPalette.navy,
+                kind: .openEntry
+            )
+        case .viewBooking:
+            return ConciergeBatchReviewNextActionPlan(
+                group: .reviewBooking,
+                title: "View the current booking",
+                supporting: "This provider is already confirmed, so a quick review is enough unless a new issue appears.",
+                buttonTitle: "View booking",
+                tint: BrandPalette.teal,
+                kind: .openEntry
+            )
+        }
+    }
+
+    private func suggestedAction(
+        for entry: ConciergeBatchReplacementReviewEntry
+    ) -> ConciergeBatchReviewSuggestedAction? {
+        guard let nextActionPlan = nextActionPlan(for: entry) else {
+            return nil
+        }
+
+        return ConciergeBatchReviewSuggestedAction(
+            title: nextActionPlan.title,
+            supporting: nextActionPlan.supporting,
+            buttonTitle: nextActionPlan.buttonTitle,
+            tint: nextActionPlan.tint,
+            kind: nextActionPlan.kind
+        )
+    }
+
+    private func groupedEntries(
+        for group: ConciergeBatchReviewNextActionGroup
+    ) -> [ConciergeBatchReplacementReviewEntry] {
+        reviewEntries
+            .enumerated()
+            .filter { nextActionPlan(for: $0.element)?.group == group }
+            .sorted { lhs, rhs in
+                let lhsPriority = reviewPriority(for: lhs.element, in: group)
+                let rhsPriority = reviewPriority(for: rhs.element, in: group)
+                if lhsPriority != rhsPriority {
+                    return lhsPriority > rhsPriority
+                }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
+    private func entries(
+        matching ids: [String]
+    ) -> [ConciergeBatchReplacementReviewEntry] {
+        ids.compactMap { id in
+            reviewEntries.first { $0.id == id }
+        }
+    }
+
+    private var stagedConfirmTitle: String {
+        let stagedCount = approvedStagedEntries.count
+        if stagedCount == 0 {
+            return "Approve staged backups to apply"
+        }
+        if stagedCount == 1 {
+            return "Apply 1 approved staged backup"
+        }
+        return "Apply \(stagedCount) approved staged backups"
+    }
+
+    private var unstagedConfirmTitle: String {
+        let readyCount = unstagedReadyEntries.count
+        if readyCount == 1 {
+            return "Apply 1 other ready backup"
+        }
+        return "Apply \(readyCount) other ready backups"
+    }
+
+    private func handleRankingUpdate(using proxy: ScrollViewProxy) {
+        syncStagedReadyEntryIDs()
+
+        guard let rankingUpdateSummary else {
+            return
+        }
+
+        let newReadyIDs = rankingUpdateSummary.newlyReadyEntryIDs.filter { id in
+            reviewEntries.contains(where: { $0.id == id && $0.canApplySuggestedReplacement })
+        }
+        guard newReadyIDs.isEmpty == false else {
+            return
+        }
+
+        for id in newReadyIDs where stagedReadyEntryIDs.contains(id) == false {
+            stagedReadyEntryIDs.append(id)
+        }
+
+        focusStagedReadyRows(using: proxy, preferredID: newReadyIDs.first)
+    }
+
+    private func focusStagedReadyRows(
+        using proxy: ScrollViewProxy,
+        preferredID: String? = nil
+    ) {
+        let currentStagedIDs = stagedReadyEntries.map(\.id)
+        guard let firstReadyID = preferredID ?? currentStagedIDs.first,
+              reviewEntries.contains(where: { $0.id == firstReadyID }) else {
+            return
+        }
+
+        focusedRecoveryEntryID = firstReadyID
+        withAnimation(.easeInOut(duration: 0.35)) {
+            proxy.scrollTo(firstReadyID, anchor: .top)
+        }
+    }
+
+    private func focusReviewEntry(
+        id: String,
+        using proxy: ScrollViewProxy
+    ) {
+        guard reviewEntries.contains(where: { $0.id == id }) else {
+            return
+        }
+
+        focusedRecoveryEntryID = id
+        withAnimation(.easeInOut(duration: 0.35)) {
+            proxy.scrollTo(id, anchor: .top)
+        }
+    }
+
+    private func syncStagedReadyEntryIDs() {
+        let readyIDs = Set(readyEntries.map(\.id))
+        stagedReadyEntryIDs = stagedReadyEntryIDs.filter { readyIDs.contains($0) }
+        let stagedIDs = Set(stagedReadyEntryIDs)
+        approvedStagedEntryFingerprints = approvedStagedEntryFingerprints.filter { stagedIDs.contains($0.key) }
+        invalidatedStagedEntryIDs = conciergeBatchReviewInvalidatedStagedEntryIDs(
+            entries: reviewEntries,
+            stagedEntryIDs: stagedReadyEntryIDs,
+            approvalFingerprints: approvedStagedEntryFingerprints
+        )
+        let invalidatedIDs = Set(invalidatedStagedEntryIDs)
+        refreshHighlightedStagedEntryIDs = refreshHighlightedStagedEntryIDs.filter { id in
+            guard stagedIDs.contains(id),
+                  invalidatedIDs.contains(id) == false,
+                  let entry = reviewEntries.first(where: { $0.id == id }),
+                  let approvalFingerprint = approvedStagedEntryFingerprints[id] else {
+                return false
+            }
+
+            return conciergeBatchReviewStagedApprovalFingerprint(for: entry) == approvalFingerprint
+        }
+
+        if let focusedRecoveryEntryID,
+           reviewEntries.contains(where: { $0.id == focusedRecoveryEntryID }) == false {
+            self.focusedRecoveryEntryID = nil
+        }
+    }
+
+    private func reviewPriority(
+        for entry: ConciergeBatchReplacementReviewEntry,
+        in group: ConciergeBatchReviewNextActionGroup
+    ) -> Int {
+        var priority = 0
+
+        if entry.rowChangeSummary?.marksRecoveryReady == true {
+            priority += 4
+        }
+
+        if group == .applyRankedBackup && entry.canApplySuggestedReplacement {
+            priority += 2
+        }
+
+        if entry.rowChangeSummary != nil {
+            priority += 1
+        }
+
+        return priority
+    }
+
+    private func sectionActions(
+        for section: ConciergeBatchReviewNextActionSection
+    ) -> [ConciergeBatchReviewSectionAction] {
+        switch section.group {
+        case .applyRankedBackup:
+            guard section.entries.contains(where: \.canApplySuggestedReplacement) else {
+                return []
+            }
+            return [ConciergeBatchReviewSectionAction(
+                title: section.entries.count == 1 ? "Apply row" : "Apply all",
+                tint: BrandPalette.teal,
+                kind: .applyAll
+            )]
+        case .closeNow:
+            guard section.entries.isEmpty == false else {
+                return []
+            }
+            return [ConciergeBatchReviewSectionAction(
+                title: section.entries.count == 1 ? "Close row" : "Close all",
+                tint: BrandPalette.teal,
+                kind: .closeAll
+            )]
+        case .switchProvider:
+            var actions: [ConciergeBatchReviewSectionAction] = []
+            let escalationCount = section.entries.filter(canEscalateGroupedIssue).count
+            if escalationCount > 0 {
+                actions.append(
+                    ConciergeBatchReviewSectionAction(
+                        title: escalationCount == 1 ? "Log issue" : "Log all issues",
+                        tint: BrandPalette.coral,
+                        kind: .logIssueAll
+                    )
+                )
+            }
+            if section.entries.contains(where: { nextActionPlan(for: $0)?.kind == .openEntry }) {
+                actions.append(
+                    ConciergeBatchReviewSectionAction(
+                        title: "Start first replacement",
+                        tint: BrandPalette.coral,
+                        kind: .openFirst
+                    )
+                )
+            }
+            return actions
+        case .followUp:
+            var actions: [ConciergeBatchReviewSectionAction] = []
+            let followUpCount = section.entries.filter(canLogGroupedFollowUp).count
+            if followUpCount > 0 {
+                actions.append(
+                    ConciergeBatchReviewSectionAction(
+                        title: followUpCount == 1 ? "Log follow-up" : "Log all follow-ups",
+                        tint: BrandPalette.gold,
+                        kind: .logFollowUpAll
+                    )
+                )
+            }
+            let snoozeCount = section.entries.filter(canSnoozeGroupedReminder).count
+            if snoozeCount > 0 {
+                actions.append(
+                    ConciergeBatchReviewSectionAction(
+                        title: snoozeCount == 1 ? "Snooze 24h" : "Snooze all 24h",
+                        tint: BrandPalette.gold,
+                        kind: .snoozeAll
+                    )
+                )
+            }
+            let escalationCount = section.entries.filter(canEscalateGroupedIssue).count
+            if escalationCount > 0 {
+                actions.append(
+                    ConciergeBatchReviewSectionAction(
+                        title: escalationCount == 1 ? "Escalate issue" : "Escalate all issues",
+                        tint: BrandPalette.coral,
+                        kind: .logIssueAll
+                    )
+                )
+            }
+            return actions
+        case .reviewBooking:
+            var actions: [ConciergeBatchReviewSectionAction] = []
+            let confirmCount = section.entries.filter(canConfirmGroupedProvider).count
+            if confirmCount > 0 {
+                actions.append(
+                    ConciergeBatchReviewSectionAction(
+                        title: confirmCount == 1 ? "Confirm ready" : "Confirm all ready",
+                        tint: BrandPalette.teal,
+                        kind: .confirmAll
+                    )
+                )
+            }
+            let snoozeCount = section.entries.filter(canSnoozeGroupedReminder).count
+            if snoozeCount > 0 {
+                actions.append(
+                    ConciergeBatchReviewSectionAction(
+                        title: snoozeCount == 1 ? "Snooze 24h" : "Snooze all 24h",
+                        tint: BrandPalette.gold,
+                        kind: .snoozeAll
+                    )
+                )
+            }
+            if actions.isEmpty,
+               section.entries.contains(where: { nextActionPlan(for: $0)?.kind == .openEntry }) {
+                actions.append(
+                    ConciergeBatchReviewSectionAction(
+                        title: "Open first booking",
+                        tint: BrandPalette.navy,
+                        kind: .openFirst
+                    )
+                )
+            }
+            return actions
+        case .waitForRanking:
+            return []
+        }
+    }
+
+    private func canSnoozeGroupedReminder(_ entry: ConciergeBatchReplacementReviewEntry) -> Bool {
+        guard let booking = entry.currentBooking else {
+            return false
+        }
+
+        return booking.isCancelled == false &&
+            booking.isCompleted == false &&
+            booking.isProviderConfirmed == false &&
+            booking.isReminderSnoozed == false &&
+            (booking.needsResponseFollowUp || booking.isResponseDueSoon)
+    }
+
+    private func canConfirmGroupedProvider(_ entry: ConciergeBatchReplacementReviewEntry) -> Bool {
+        guard let booking = entry.currentBooking else {
+            return false
+        }
+
+        return booking.isCancelled == false &&
+            booking.isCompleted == false &&
+            booking.isProviderConfirmed == false
+    }
+
+    private func canEscalateGroupedIssue(_ entry: ConciergeBatchReplacementReviewEntry) -> Bool {
+        guard let booking = entry.currentBooking else {
+            return false
+        }
+
+        return booking.isCancelled == false &&
+            booking.isCompleted == false &&
+            booking.hasOpenIssue == false &&
+            (booking.needsResponseFollowUp || booking.followUpCountValue >= 2)
+    }
+
+    private func handleSectionAction(
+        _ action: ConciergeBatchReviewSectionAction,
+        for section: ConciergeBatchReviewNextActionSection
+    ) {
+        switch action.kind {
+        case .applyAll:
+            let actionableEntries = section.entries.filter(\.canApplySuggestedReplacement)
+            guard actionableEntries.isEmpty == false else {
+                return
+            }
+            applyReadyBackups(actionableEntries)
+        case .closeAll:
+            closeReviewEntries(ids: section.entries.map(\.id))
+        case .openFirst:
+            guard let entry = section.entries.first(where: { nextActionPlan(for: $0)?.kind == .openEntry }) else {
+                return
+            }
+            dismiss()
+            onOpenEntry(entry, currentReturnContext)
+        case .logFollowUpAll:
+            performGroupedFollowUp(for: section.entries)
+        case .snoozeAll:
+            performGroupedSnooze(for: section.entries)
+        case .confirmAll:
+            performGroupedConfirm(for: section.entries)
+        case .logIssueAll:
+            performGroupedIssueEscalation(for: section.entries)
+        }
+    }
+
+    private func applyReadyBackupsNow() {
+        applyReadyBackups(readyEntries)
+    }
+
+    private func applyUnstagedReadyBackups() {
+        applyReadyBackups(unstagedReadyEntries)
+    }
+
+    private func applyStagedReadyBackups() {
+        guard approvedStagedEntries.isEmpty == false else {
+            sectionActionAlert = ConciergeBatchReviewStatusAlert(
+                title: "Approve a staged row first",
+                message: "Approve at least one staged backup before applying the mini-batch, or defer the ones you do not want to switch right now."
+            )
+            return
+        }
+
+        applyReadyBackups(approvedStagedEntries)
+    }
+
+    private func applyReadyBackups(
+        _ entries: [ConciergeBatchReplacementReviewEntry]
+    ) {
+        guard entries.isEmpty == false else {
+            return
+        }
+
+        let appliedIDs = Set(entries.map(\.id))
+        let appliedRefreshHighlightIDs = refreshHighlightedStagedEntryIDs.filter { appliedIDs.contains($0) }
+        if appliedRefreshHighlightIDs.isEmpty == false {
+            reviewedRefreshHighlightEntryIDs.removeAll { appliedIDs.contains($0) }
+            for id in appliedRefreshHighlightIDs where appliedRefreshHighlightEntryIDs.contains(id) == false {
+                appliedRefreshHighlightEntryIDs.append(id)
+            }
+        } else {
+            let previouslyReviewedAppliedIDs = reviewedRefreshHighlightEntryIDs.filter { appliedIDs.contains($0) }
+            if previouslyReviewedAppliedIDs.isEmpty == false {
+                reviewedRefreshHighlightEntryIDs.removeAll { appliedIDs.contains($0) }
+                for id in previouslyReviewedAppliedIDs where appliedRefreshHighlightEntryIDs.contains(id) == false {
+                    appliedRefreshHighlightEntryIDs.append(id)
+                }
+            }
+        }
+        refreshHighlightedStagedEntryIDs.removeAll { appliedIDs.contains($0) }
+        isApplying = true
+        onConfirm(entries, currentReturnContext)
+        dismiss()
+    }
+
+    private func deferStagedReadyBackups() {
+        guard stagedReadyEntries.isEmpty == false else {
+            return
+        }
+
+        let stagedIDs = Set(stagedReadyEntries.map(\.id))
+        stagedReadyEntryIDs.removeAll { stagedIDs.contains($0) }
+        for id in stagedIDs {
+            approvedStagedEntryFingerprints.removeValue(forKey: id)
+        }
+        invalidatedStagedEntryIDs.removeAll { stagedIDs.contains($0) }
+        refreshHighlightedStagedEntryIDs.removeAll { stagedIDs.contains($0) }
+        if let focusedRecoveryEntryID, stagedIDs.contains(focusedRecoveryEntryID) {
+            self.focusedRecoveryEntryID = nil
+        }
+    }
+
+    private func approveAllPendingStagedEntries() {
+        let pendingIDs = pendingStagedEntries.map(\.id)
+        guard pendingIDs.isEmpty == false else {
+            return
+        }
+
+        for id in pendingIDs {
+            guard let entry = stagedReadyEntries.first(where: { $0.id == id }),
+                  let approvalFingerprint = conciergeBatchReviewStagedApprovalFingerprint(for: entry) else {
+                continue
+            }
+
+            approvedStagedEntryFingerprints[id] = approvalFingerprint
+        }
+        invalidatedStagedEntryIDs.removeAll { pendingIDs.contains($0) }
+    }
+
+    private func approveStagedEntry(id: String) {
+        guard stagedReadyEntryIDs.contains(id),
+              let entry = stagedReadyEntries.first(where: { $0.id == id }),
+              let approvalFingerprint = conciergeBatchReviewStagedApprovalFingerprint(for: entry) else {
+            return
+        }
+
+        approvedStagedEntryFingerprints[id] = approvalFingerprint
+        invalidatedStagedEntryIDs.removeAll { $0 == id }
+    }
+
+    private func approveApprovalRefreshItems(_ ids: [String]) {
+        let actionableIDs = Set(actionableApprovalRefreshItems.map(\.id))
+        let uniqueIDs = Array(Set(ids)).filter { actionableIDs.contains($0) }
+        guard uniqueIDs.isEmpty == false else {
+            return
+        }
+
+        for id in uniqueIDs {
+            approveStagedEntry(id: id)
+        }
+        for id in uniqueIDs where refreshHighlightedStagedEntryIDs.contains(id) == false {
+            refreshHighlightedStagedEntryIDs.append(id)
+        }
+
+        let remainingActionableCount = actionableApprovalRefreshItems.count
+        guard remainingActionableCount == 0 else {
+            return
+        }
+
+        let pendingCount = pendingStagedEntries.count
+        let approvedCount = approvedStagedEntries.count
+        approvalRefreshCloseoutSummary = ConciergeBatchReviewApprovalRefreshCloseoutSummary(
+            title: uniqueIDs.count == 1 ? "1 safe re-approval applied" : "\(uniqueIDs.count) safe re-approvals applied",
+            message: {
+                if pendingCount > 0 {
+                    return "\(uniqueIDs.count) safe row\(uniqueIDs.count == 1 ? "" : "s") moved back into the approved staged set. \(pendingCount) staged row\(pendingCount == 1 ? " still needs" : "s still need") review below."
+                }
+
+                return "\(uniqueIDs.count) safe row\(uniqueIDs.count == 1 ? "" : "s") moved back into the approved staged set and the refresh summary has handed off to the live staged review."
+            }(),
+            supporting: approvedCount == 0
+                ? "No approved staged rows are left right now."
+                : "\(approvedCount) staged row\(approvedCount == 1 ? "" : "s") are now approved in the current mini-batch."
+        )
+        hasClosedApprovalRefreshSummary = true
+        hasDismissedApprovalRefreshCloseoutSummary = false
+    }
+
+    private func jumpToApprovalRefreshHandoff(
+        using proxy: ScrollViewProxy,
+        dismissCloseoutAfterJump: Bool = false
+    ) {
+        guard stagedReadyEntries.isEmpty == false else {
+            if dismissCloseoutAfterJump {
+                hasDismissedApprovalRefreshCloseoutSummary = true
+            }
+            return
+        }
+
+        focusedRecoveryEntryID = approvedStagedEntries.first?.id ?? stagedReadyEntries.first?.id
+        withAnimation(.easeInOut(duration: 0.35)) {
+            proxy.scrollTo(stagedReviewAnchorID, anchor: .top)
+        }
+
+        if dismissCloseoutAfterJump {
+            hasDismissedApprovalRefreshCloseoutSummary = true
+        }
+    }
+
+    private func handleRefreshOutcomeItem(
+        _ item: ConciergeBatchReviewRefreshOutcomeItem,
+        using proxy: ScrollViewProxy
+    ) {
+        if item.action?.kind == .jumpToReviewRow {
+            updateRefreshOutcomeJumpLaneProgress(
+                selectedID: item.id,
+                items: context.refreshSummary?.jumpItems ?? [item]
+            )
+        }
+        if item.action?.kind == .openBooking {
+            markRefreshOutcomeBookingVisited(item.id)
+        }
+
+        performRefreshOutcomeAction(item, using: proxy)
+    }
+
+    private func performRefreshOutcomeAction(
+        _ item: ConciergeBatchReviewRefreshOutcomeItem,
+        using proxy: ScrollViewProxy
+    ) {
+        guard let action = item.action else {
+            return
+        }
+
+        switch action.kind {
+        case .jumpToReviewRow:
+            if reviewEntries.contains(where: { $0.id == item.id }) {
+                focusReviewEntry(id: item.id, using: proxy)
+            } else if let entryReference = item.entryReference {
+                openRefreshOutcomeReference(entryReference)
+            }
+        case .openBooking:
+            guard let entryReference = item.entryReference else {
+                return
+            }
+            openRefreshOutcomeReference(entryReference)
+        }
+    }
+
+    private func handleRefreshOutcomeJumpLane(
+        _ items: [ConciergeBatchReviewRefreshOutcomeItem],
+        using proxy: ScrollViewProxy
+    ) {
+        guard let targetItem = nextRefreshOutcomeJumpLaneItem(from: items) else {
+            return
+        }
+
+        updateRefreshOutcomeJumpLaneProgress(
+            selectedID: targetItem.id,
+            items: items
+        )
+        performRefreshOutcomeAction(targetItem, using: proxy)
+    }
+
+    private func handleRefreshOutcomeBookingLane(
+        _ items: [ConciergeBatchReviewRefreshOutcomeItem],
+        using proxy: ScrollViewProxy
+    ) {
+        guard let targetItem = nextRefreshOutcomeBookingLaneItem(from: items) else {
+            return
+        }
+
+        handleRefreshOutcomeItem(targetItem, using: proxy)
+    }
+
+    private func nextRefreshOutcomeJumpLaneItem(
+        from items: [ConciergeBatchReviewRefreshOutcomeItem]
+    ) -> ConciergeBatchReviewRefreshOutcomeItem? {
+        let actionableItems = items.filter { item in
+            reviewEntries.contains(where: { $0.id == item.id }) || item.entryReference != nil
+        }
+        guard actionableItems.isEmpty == false else {
+            return nil
+        }
+
+        guard let currentID = refreshOutcomeJumpLaneProgress?.lastItemID,
+              let currentIndex = actionableItems.firstIndex(where: { $0.id == currentID }),
+              actionableItems.count > 1 else {
+            return actionableItems.first
+        }
+
+        return actionableItems[(currentIndex + 1) % actionableItems.count]
+    }
+
+    private func updateRefreshOutcomeJumpLaneProgress(
+        selectedID: String,
+        items: [ConciergeBatchReviewRefreshOutcomeItem]
+    ) {
+        refreshOutcomeJumpLaneProgress = conciergeBatchReviewRefreshLaneProgress(
+            selectedID: selectedID,
+            items: items
+        )
+    }
+
+    private func nextRefreshOutcomeBookingLaneItem(
+        from items: [ConciergeBatchReviewRefreshOutcomeItem]
+    ) -> ConciergeBatchReviewRefreshOutcomeItem? {
+        let actionableItems = items.filter { $0.entryReference != nil }
+        guard actionableItems.isEmpty == false else {
+            return nil
+        }
+
+        let visitedIDs = Set(visitedRefreshBookingEntryIDs)
+        if let firstUnvisitedItem = actionableItems.first(where: { visitedIDs.contains($0.id) == false }) {
+            return firstUnvisitedItem
+        }
+
+        guard let currentID = bookingLaneProgress?.lastItemID,
+              let currentIndex = actionableItems.firstIndex(where: { $0.id == currentID }),
+              actionableItems.count > 1 else {
+            return actionableItems.first
+        }
+
+        return actionableItems[(currentIndex + 1) % actionableItems.count]
+    }
+
+    private func markRefreshOutcomeBookingVisited(_ id: String) {
+        visitedRefreshBookingEntryIDs.removeAll { $0 == id }
+        visitedRefreshBookingEntryIDs.append(id)
+    }
+
+    private func hideCompletedRefreshBookingLane() {
+        guard bookingLaneProgress?.remainingCount == 0 else {
+            return
+        }
+
+        hasHiddenCompletedBookingLane = true
+        hasActiveBookingLaneReactivation = false
+        hasDismissedBookingLaneReactivationCompletion = false
+        reactivatedRefreshBookingEntryIDs.removeAll()
+        reactivationCompletionReviewLastItemID = nil
+        reviewedReactivationCompletionItemIDs.removeAll()
+    }
+
+    private func restoreRefreshBookingLane() {
+        hasHiddenCompletedBookingLane = false
+    }
+
+    private func hideCompletedRefreshBookingLaneAfterReactivation() {
+        hideCompletedRefreshBookingLane()
+    }
+
+    private func dismissBookingLaneReactivationCompletion() {
+        hasDismissedBookingLaneReactivationCompletion = true
+    }
+
+    private func reviewNextClearedReactivationBooking(using proxy: ScrollViewProxy) {
+        guard let nextItem = nextReactivationCompletionReviewItem() else {
+            return
+        }
+
+        if reviewedReactivationCompletionItemIDs.contains(nextItem.id) == false {
+            reviewedReactivationCompletionItemIDs.append(nextItem.id)
+        }
+        reactivationCompletionReviewLastItemID = nextItem.id
+        handleRefreshOutcomeItem(nextItem, using: proxy)
+    }
+
+    private func syncBookingLaneReactivationState() {
+        let currentOutstandingIDs = context.refreshSummary?.bookingItems
+            .filter { visitedRefreshBookingEntryIDs.contains($0.id) == false }
+            .map(\.id) ?? []
+
+        if showsReactivatedBookingLane {
+            for id in currentOutstandingIDs where reactivatedRefreshBookingEntryIDs.contains(id) == false {
+                reactivatedRefreshBookingEntryIDs.append(id)
+            }
+            hasActiveBookingLaneReactivation = true
+            hasDismissedBookingLaneReactivationCompletion = false
+            reactivationCompletionReviewLastItemID = nil
+            reviewedReactivationCompletionItemIDs.removeAll()
+        } else if isBookingLaneHidden {
+            hasActiveBookingLaneReactivation = false
+            hasDismissedBookingLaneReactivationCompletion = false
+            reactivatedRefreshBookingEntryIDs.removeAll()
+            reactivationCompletionReviewLastItemID = nil
+            reviewedReactivationCompletionItemIDs.removeAll()
+        }
+    }
+
+    private func nextReactivationCompletionReviewItem() -> ConciergeBatchReviewRefreshOutcomeItem? {
+        pendingReactivationCompletionReviewItems.first
+    }
+
+    private func openRefreshOutcomeReference(
+        _ reference: ConciergeBatchReviewEntryReference
+    ) {
+        if let activeEntry = reviewEntries.first(where: { $0.id == reference.id }) {
+            dismiss()
+            onOpenEntry(activeEntry, currentReturnContext)
+            return
+        }
+
+        let currentBooking = store.offer(id: reference.offerID)?.conciergeBooking(for: reference.serviceKind)
+        let reviewFingerprint = currentBooking.map {
+            conciergeReplacementPreviewFingerprint(
+                for: $0,
+                strategy: context.strategy
+            )
+        }
+        let entry = ConciergeBatchReplacementReviewEntry(
+            id: reference.id,
+            offerID: reference.offerID,
+            listing: reference.listing,
+            serviceKind: reference.serviceKind,
+            counterpartLabel: reference.counterpartLabel,
+            counterpartName: reference.counterpartName,
+            currentBooking: currentBooking,
+            reviewFingerprint: reviewFingerprint,
+            suggestedReplacement: nil,
+            isLoadingSuggestion: false,
+            manualReviewReason: currentBooking == nil
+                ? "This concierge booking is no longer available in the settled archive."
+                : nil
+        )
+
+        dismiss()
+        onOpenEntry(entry, currentReturnContext)
+    }
+
+    private func clearAllRefreshHighlights() {
+        guard refreshHighlightedStagedEntryIDs.isEmpty == false else {
+            return
+        }
+
+        for id in refreshHighlightedStagedEntryIDs where reviewedRefreshHighlightEntryIDs.contains(id) == false {
+            reviewedRefreshHighlightEntryIDs.append(id)
+        }
+        refreshHighlightedStagedEntryIDs.removeAll()
+    }
+
+    private func clearRefreshHighlight(id: String) {
+        guard refreshHighlightedStagedEntryIDs.contains(id) else {
+            return
+        }
+
+        if reviewedRefreshHighlightEntryIDs.contains(id) == false {
+            reviewedRefreshHighlightEntryIDs.append(id)
+        }
+        refreshHighlightedStagedEntryIDs.removeAll { $0 == id }
+    }
+
+    private func removeStagedApproval(id: String) {
+        approvedStagedEntryFingerprints.removeValue(forKey: id)
+        invalidatedStagedEntryIDs.removeAll { $0 == id }
+        refreshHighlightedStagedEntryIDs.removeAll { $0 == id }
+    }
+
+    private func deferStagedEntry(id: String) {
+        stagedReadyEntryIDs.removeAll { $0 == id }
+        approvedStagedEntryFingerprints.removeValue(forKey: id)
+        invalidatedStagedEntryIDs.removeAll { $0 == id }
+        refreshHighlightedStagedEntryIDs.removeAll { $0 == id }
+        if focusedRecoveryEntryID == id {
+            focusedRecoveryEntryID = stagedReadyEntries.first(where: { $0.id != id })?.id
+        }
+    }
+
+    private func handleSuggestedAction(
+        for entry: ConciergeBatchReplacementReviewEntry
+    ) {
+        guard let suggestedAction = suggestedAction(for: entry),
+              let kind = suggestedAction.kind else {
+            return
+        }
+
+        switch kind {
+        case .applySuggestedReplacement:
+            applyReadyBackups([entry])
+        case .closeEntry:
+            closeReviewEntries(ids: [entry.id])
+        case .openEntry:
+            dismiss()
+            onOpenEntry(entry, currentReturnContext)
+        }
+    }
+
+    private func canLogGroupedFollowUp(_ entry: ConciergeBatchReplacementReviewEntry) -> Bool {
+        guard let booking = entry.currentBooking else {
+            return false
+        }
+
+        return conciergeAttentionPrimaryAction(for: booking) == .callProvider
+    }
+
+    private func performGroupedFollowUp(
+        for entries: [ConciergeBatchReplacementReviewEntry]
+    ) {
+        let actionableEntries = entries.filter(canLogGroupedFollowUp)
+        guard actionableEntries.isEmpty == false else {
+            sectionActionAlert = ConciergeBatchReviewStatusAlert(
+                title: "Nothing to log",
+                message: "Those provider rows no longer need direct follow-up from this review."
+            )
+            return
+        }
+
+        var successCount = 0
+        let previousSnapshotsByID = Dictionary(
+            uniqueKeysWithValues: actionableEntries.map { ($0.id, conciergeBatchReviewRowSnapshot(for: $0)) }
+        )
+
+        for entry in actionableEntries {
+            guard let outcome = store.logPostSaleConciergeFollowUp(
+                offerID: entry.offerID,
+                userID: store.currentUserID,
+                serviceKind: entry.serviceKind,
+                note: ""
+            ) else {
+                continue
+            }
+
+            if let counterpart = counterpart(for: entry) {
+                messaging.sendMessage(
+                    listing: entry.listing,
+                    from: store.currentUser,
+                    to: counterpart,
+                    body: outcome.threadMessage,
+                    isSystem: true
+                )
+            }
+
+            successCount += 1
+        }
+
+        guard successCount > 0 else {
+            sectionActionAlert = ConciergeBatchReviewStatusAlert(
+                title: "Follow-up unavailable",
+                message: "Those provider rows changed before the grouped action ran, so no follow-up was logged."
+            )
+            return
+        }
+
+        refreshReviewEntries(
+            ids: actionableEntries.map(\.id),
+            previousSnapshotsByID: previousSnapshotsByID
+        )
+
+        sectionActionAlert = ConciergeBatchReviewStatusAlert(
+            title: successCount == 1 ? "Follow-up logged" : "Grouped follow-up complete",
+            message: successCount == 1
+                ? "Logged direct provider follow-up for 1 concierge row and refreshed the review."
+                : "Logged direct provider follow-up for \(successCount) concierge rows and refreshed the review."
+        )
+    }
+
+    private func performGroupedSnooze(
+        for entries: [ConciergeBatchReplacementReviewEntry]
+    ) {
+        let actionableEntries = entries.filter(canSnoozeGroupedReminder)
+        guard actionableEntries.isEmpty == false else {
+            sectionActionAlert = ConciergeBatchReviewStatusAlert(
+                title: "Nothing to snooze",
+                message: "Those provider rows are no longer in a state that can be snoozed from this review."
+            )
+            return
+        }
+
+        let snoozeUntil = Date().addingTimeInterval(60 * 60 * 24)
+        var successCount = 0
+        let previousSnapshotsByID = Dictionary(
+            uniqueKeysWithValues: actionableEntries.map { ($0.id, conciergeBatchReviewRowSnapshot(for: $0)) }
+        )
+
+        for entry in actionableEntries {
+            guard let outcome = store.snoozePostSaleConciergeFollowUp(
+                offerID: entry.offerID,
+                userID: store.currentUserID,
+                serviceKind: entry.serviceKind,
+                until: snoozeUntil
+            ) else {
+                continue
+            }
+
+            if let counterpart = counterpart(for: entry) {
+                messaging.sendMessage(
+                    listing: entry.listing,
+                    from: store.currentUser,
+                    to: counterpart,
+                    body: outcome.threadMessage,
+                    isSystem: true
+                )
+            }
+
+            successCount += 1
+        }
+
+        guard successCount > 0 else {
+            sectionActionAlert = ConciergeBatchReviewStatusAlert(
+                title: "Snooze unavailable",
+                message: "Those provider rows changed before the grouped snooze ran, so nothing was updated."
+            )
+            return
+        }
+
+        refreshReviewEntries(
+            ids: actionableEntries.map(\.id),
+            previousSnapshotsByID: previousSnapshotsByID
+        )
+
+        sectionActionAlert = ConciergeBatchReviewStatusAlert(
+            title: successCount == 1 ? "Reminder snoozed" : "Grouped snooze complete",
+            message: successCount == 1
+                ? "Snoozed 1 concierge reminder for 24 hours and refreshed the review."
+                : "Snoozed \(successCount) concierge reminders for 24 hours and refreshed the review."
+        )
+    }
+
+    private func performGroupedConfirm(
+        for entries: [ConciergeBatchReplacementReviewEntry]
+    ) {
+        let actionableEntries = entries.filter(canConfirmGroupedProvider)
+        guard actionableEntries.isEmpty == false else {
+            sectionActionAlert = ConciergeBatchReviewStatusAlert(
+                title: "Nothing to confirm",
+                message: "Those provider rows are no longer ready to be marked confirmed from this review."
+            )
+            return
+        }
+
+        var successCount = 0
+        let previousSnapshotsByID = Dictionary(
+            uniqueKeysWithValues: actionableEntries.map { ($0.id, conciergeBatchReviewRowSnapshot(for: $0)) }
+        )
+
+        for entry in actionableEntries {
+            guard let outcome = store.confirmPostSaleConciergeProvider(
+                offerID: entry.offerID,
+                userID: store.currentUserID,
+                serviceKind: entry.serviceKind,
+                note: ""
+            ) else {
+                continue
+            }
+
+            if let counterpart = counterpart(for: entry) {
+                messaging.sendMessage(
+                    listing: entry.listing,
+                    from: store.currentUser,
+                    to: counterpart,
+                    body: outcome.threadMessage,
+                    isSystem: true
+                )
+            }
+
+            successCount += 1
+        }
+
+        guard successCount > 0 else {
+            sectionActionAlert = ConciergeBatchReviewStatusAlert(
+                title: "Confirmation unavailable",
+                message: "Those provider rows changed before the grouped confirm ran, so nothing was updated."
+            )
+            return
+        }
+
+        refreshReviewEntries(
+            ids: actionableEntries.map(\.id),
+            previousSnapshotsByID: previousSnapshotsByID
+        )
+
+        sectionActionAlert = ConciergeBatchReviewStatusAlert(
+            title: successCount == 1 ? "Provider confirmed" : "Grouped confirm complete",
+            message: successCount == 1
+                ? "Marked 1 provider confirmed and refreshed the review."
+                : "Marked \(successCount) providers confirmed and refreshed the review."
+        )
+    }
+
+    private func performGroupedIssueEscalation(
+        for entries: [ConciergeBatchReplacementReviewEntry]
+    ) {
+        let actionableEntries = entries.filter(canEscalateGroupedIssue)
+        guard actionableEntries.isEmpty == false else {
+            sectionActionAlert = ConciergeBatchReviewStatusAlert(
+                title: "Nothing to escalate",
+                message: "Those provider rows no longer need an issue logged from this review."
+            )
+            return
+        }
+
+        var successCount = 0
+        let previousSnapshotsByID = Dictionary(
+            uniqueKeysWithValues: actionableEntries.map { ($0.id, conciergeBatchReviewRowSnapshot(for: $0)) }
+        )
+
+        for entry in actionableEntries {
+            guard let booking = entry.currentBooking,
+                  let outcome = store.logPostSaleConciergeIssue(
+                    offerID: entry.offerID,
+                    userID: store.currentUserID,
+                    serviceKind: entry.serviceKind,
+                    issueKind: groupedEscalationIssueKind(for: booking),
+                    note: groupedEscalationIssueNote(for: entry, booking: booking)
+                  ) else {
+                continue
+            }
+
+            if let counterpart = counterpart(for: entry) {
+                messaging.sendMessage(
+                    listing: entry.listing,
+                    from: store.currentUser,
+                    to: counterpart,
+                    body: outcome.threadMessage,
+                    isSystem: true
+                )
+            }
+
+            successCount += 1
+        }
+
+        guard successCount > 0 else {
+            sectionActionAlert = ConciergeBatchReviewStatusAlert(
+                title: "Escalation unavailable",
+                message: "Those provider rows changed before the grouped issue log ran, so nothing was updated."
+            )
+            return
+        }
+
+        refreshReviewEntries(
+            ids: actionableEntries.map(\.id),
+            previousSnapshotsByID: previousSnapshotsByID
+        )
+
+        sectionActionAlert = ConciergeBatchReviewStatusAlert(
+            title: successCount == 1 ? "Issue logged" : "Grouped escalation complete",
+            message: successCount == 1
+                ? "Logged 1 concierge issue and refreshed the review into the latest escalation state."
+                : "Logged \(successCount) concierge issues and refreshed the review into the latest escalation state."
+        )
+    }
+
+    private func groupedEscalationIssueKind(
+        for booking: PostSaleConciergeBooking
+    ) -> PostSaleConciergeIssueKind {
+        if booking.scheduledFor <= .now {
+            return .providerNoShow
+        }
+
+        return .schedulingProblem
+    }
+
+    private func groupedEscalationIssueNote(
+        for entry: ConciergeBatchReplacementReviewEntry,
+        booking: PostSaleConciergeBooking
+    ) -> String {
+        if booking.scheduledFor <= .now {
+            return "Escalated from \(context.hubTitle) batch review after the scheduled service window passed without provider confirmation."
+        }
+
+        if booking.followUpCountValue >= 2 {
+            return "Escalated from \(context.hubTitle) batch review after repeated unanswered provider follow-up."
+        }
+
+        return "Escalated from \(context.hubTitle) batch review after the provider reply window was missed."
+    }
+
+    private func counterpart(
+        for entry: ConciergeBatchReplacementReviewEntry
+    ) -> UserProfile? {
+        guard let offer = store.offer(id: entry.offerID) else {
+            return nil
+        }
+
+        let counterpartID = offer.buyerID == store.currentUserID ? offer.sellerID : offer.buyerID
+        return store.user(id: counterpartID)
+    }
+
+    private func refreshReviewEntries(
+        ids: [String],
+        previousSnapshotsByID: [String: ConciergeBatchReviewRowSnapshot]
+    ) {
+        let idSet = Set(ids)
+        guard idSet.isEmpty == false else {
+            return
+        }
+
+        reviewEntries = reviewEntries.map { entry in
+            guard idSet.contains(entry.id) else {
+                return entry
+            }
+
+            var refreshedEntry = refreshedReviewEntry(from: entry)
+            if let previousSnapshot = previousSnapshotsByID[entry.id] {
+                refreshedEntry.rowChangeSummary = conciergeBatchReviewRowChangeSummary(
+                    previousSnapshot: previousSnapshot,
+                    refreshedEntry: refreshedEntry
+                )
+            }
+            return refreshedEntry
+        }
+
+        syncStagedReadyEntryIDs()
+
+        if reviewEntries.contains(where: \.isLoadingSuggestion) {
+            Task {
+                await resolveMissingSuggestions()
+            }
+        }
+    }
+
+    private func refreshedReviewEntry(
+        from entry: ConciergeBatchReplacementReviewEntry
+    ) -> ConciergeBatchReplacementReviewEntry {
+        guard let offer = store.offer(id: entry.offerID) else {
+            return ConciergeBatchReplacementReviewEntry(
+                id: entry.id,
+                offerID: entry.offerID,
+                listing: entry.listing,
+                serviceKind: entry.serviceKind,
+                counterpartLabel: entry.counterpartLabel,
+                counterpartName: entry.counterpartName,
+                currentBooking: nil,
+                reviewFingerprint: nil,
+                suggestedReplacement: nil,
+                isLoadingSuggestion: false,
+                manualReviewReason: "This concierge booking is no longer available in the settled archive."
+            )
+        }
+
+        let booking = offer.conciergeBooking(for: entry.serviceKind)
+        let fingerprint = booking.map {
+            conciergeReplacementPreviewFingerprint(
+                for: $0,
+                strategy: context.strategy
+            )
+        }
+
+        let suggestion: ConciergeReplacementSuggestion?
+        let manualReviewReason: String?
+        let isLoadingSuggestion: Bool
+
+        if let booking {
+            if conciergeAttentionPrimaryAction(for: booking) != .switchProvider {
+                suggestion = nil
+                manualReviewReason = "This provider thread is not currently in switch-provider mode, so it still needs manual review from the booking."
+                isLoadingSuggestion = false
+            } else if entry.reviewFingerprint == fingerprint, entry.suggestedReplacement != nil {
+                suggestion = entry.suggestedReplacement
+                manualReviewReason = nil
+                isLoadingSuggestion = false
+            } else {
+                suggestion = nil
+                manualReviewReason = nil
+                isLoadingSuggestion = true
+            }
+        } else {
+            suggestion = nil
+            manualReviewReason = "This concierge booking is no longer available in the settled archive."
+            isLoadingSuggestion = false
+        }
+
+        return ConciergeBatchReplacementReviewEntry(
+            id: entry.id,
+            offerID: entry.offerID,
+            listing: entry.listing,
+            serviceKind: entry.serviceKind,
+            counterpartLabel: entry.counterpartLabel,
+            counterpartName: entry.counterpartName,
+            currentBooking: booking,
+            reviewFingerprint: fingerprint,
+            suggestedReplacement: suggestion,
+            isLoadingSuggestion: isLoadingSuggestion,
+            manualReviewReason: manualReviewReason
+        )
+    }
+
+    private func closeReviewEntries(ids: [String]) {
+        let idSet = Set(ids)
+        guard idSet.isEmpty == false else {
+            return
+        }
+
+        let remainingEntries = reviewEntries.filter { idSet.contains($0.id) == false }
+        let closedIDs = reviewEntries
+            .map(\.id)
+            .filter { idSet.contains($0) }
+
+        guard closedIDs.isEmpty == false else {
+            return
+        }
+
+        reviewEntries = remainingEntries
+        syncStagedReadyEntryIDs()
+        if let focusedRecoveryEntryID, idSet.contains(focusedRecoveryEntryID) {
+            self.focusedRecoveryEntryID = nil
+        }
+        onCloseEntries(closedIDs, remainingEntries.count)
+
+        if remainingEntries.isEmpty {
+            dismiss()
+        }
+    }
+
+    @MainActor
+    private func resolveMissingSuggestions() async {
+        let pendingIndices = reviewEntries.indices.filter {
+            reviewEntries[$0].isLoadingSuggestion && reviewEntries[$0].currentBooking != nil
+        }
+        guard pendingIndices.isEmpty == false, isResolvingMissingSuggestions == false else {
+            return
+        }
+
+        isResolvingMissingSuggestions = true
+        defer { isResolvingMissingSuggestions = false }
+
+        let previousSnapshotsByID = Dictionary(
+            uniqueKeysWithValues: pendingIndices.map { index in
+                (reviewEntries[index].id, conciergeBatchReviewRowSnapshot(for: reviewEntries[index]))
+            }
+        )
+        var resolvedIDs: [String] = []
+
+        for index in pendingIndices {
+            guard let booking = reviewEntries[index].currentBooking else {
+                reviewEntries[index].isLoadingSuggestion = false
+                reviewEntries[index].manualReviewReason = "This concierge booking is no longer available in the settled archive."
+                if let previousSnapshot = previousSnapshotsByID[reviewEntries[index].id] {
+                    reviewEntries[index].rowChangeSummary = conciergeBatchReviewRowChangeSummary(
+                        previousSnapshot: previousSnapshot,
+                        refreshedEntry: reviewEntries[index]
+                    )
+                }
+                resolvedIDs.append(reviewEntries[index].id)
+                continue
+            }
+
+            do {
+                let providers = try await store.searchPostSaleConciergeProviders(
+                    for: reviewEntries[index].listing,
+                    serviceKind: reviewEntries[index].serviceKind
+                )
+                let rankedProviders = rankedConciergeReplacementProviders(
+                    for: booking,
+                    listing: reviewEntries[index].listing,
+                    candidates: providers,
+                    strategy: context.strategy
+                )
+
+                if let bestProvider = rankedProviders.first {
+                    reviewEntries[index].suggestedReplacement = conciergeReplacementSuggestion(
+                        for: bestProvider,
+                        currentBooking: booking,
+                        listing: reviewEntries[index].listing,
+                        rankedCandidates: rankedProviders,
+                        strategy: context.strategy
+                    )
+                    reviewEntries[index].manualReviewReason = nil
+                } else {
+                    reviewEntries[index].manualReviewReason = "No ranked backup is available yet for this booking, so it still needs manual review."
+                }
+            } catch {
+                reviewEntries[index].manualReviewReason = "Could not rank local backups right now. Review this booking manually before switching providers."
+            }
+
+            reviewEntries[index].isLoadingSuggestion = false
+            if let previousSnapshot = previousSnapshotsByID[reviewEntries[index].id] {
+                reviewEntries[index].rowChangeSummary = conciergeBatchReviewRowChangeSummary(
+                    previousSnapshot: previousSnapshot,
+                    refreshedEntry: reviewEntries[index]
+                )
+            }
+            resolvedIDs.append(reviewEntries[index].id)
+        }
+
+        let resolvedEntries = reviewEntries.filter { resolvedIDs.contains($0.id) }
+        rankingUpdateSummary = conciergeBatchReviewRankingUpdateSummary(
+            hubTitle: context.hubTitle,
+            resolvedEntries: resolvedEntries,
+            previousSnapshotsByID: previousSnapshotsByID,
+            remainingLoadingCount: reviewEntries.filter(\.isLoadingSuggestion).count
+        )
+
+        if reviewEntries.contains(where: \.isLoadingSuggestion) {
+            Task {
+                await resolveMissingSuggestions()
+            }
+        }
+    }
+}
+
+private struct ConciergeBatchReplacementReviewCard: View {
+    let entry: ConciergeBatchReplacementReviewEntry
+    var isAutoFocused = false
+    var isStaged = false
+    var suggestedAction: ConciergeBatchReviewSuggestedAction? = nil
+    var onSuggestedAction: (() -> Void)? = nil
+
+    private var notesSummary: String {
+        guard let booking = entry.currentBooking else {
+            return "No active notes on file"
+        }
+
+        return booking.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "No active notes on file"
+            : "Notes will carry forward"
+    }
+
+    private var scheduledSummary: String? {
+        guard let booking = entry.currentBooking else {
+            return nil
+        }
+
+        return "\(shortDateString(booking.scheduledFor)) at \(timeString(booking.scheduledFor))"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                Circle()
+                    .fill(BrandPalette.teal.opacity(0.14))
+                    .frame(width: 34, height: 34)
+                    .overlay {
+                        Image(systemName: entry.serviceKind.symbolName)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(BrandPalette.teal)
+                    }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(entry.serviceKind.title)
+                        .font(.subheadline.weight(.bold))
+                    Text(entry.listing.title)
+                        .font(.headline)
+                    Text(entry.listing.address.fullLine)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("\(entry.counterpartLabel): \(entry.counterpartName)")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(BrandPalette.teal)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            AdaptiveTagGrid(minimum: 130) {
+                if let scheduledSummary {
+                    InfoPill(label: scheduledSummary)
+                }
+                InfoPill(label: notesSummary)
+                if isStaged {
+                    InfoPill(label: "Staged now")
+                }
+                if entry.rowChangeSummary?.marksRecoveryReady == true {
+                    InfoPill(label: "Just became ready")
+                }
+                if let booking = entry.currentBooking,
+                   let estimatedCost = booking.estimatedCost {
+                    InfoPill(label: "Quote \(currencyString(estimatedCost))")
+                }
+            }
+
+            if let rowChangeSummary = entry.rowChangeSummary {
+                ConciergeBatchReviewRowChangePanel(summary: rowChangeSummary)
+            }
+
+            if let suggestedAction {
+                ConciergeBatchReviewSuggestedActionPanel(
+                    action: suggestedAction,
+                    onAction: onSuggestedAction
+                )
+            }
+
+            if let currentProvider = entry.currentProvider {
+                if let suggestedReplacement = entry.suggestedReplacement {
+                    HStack(alignment: .top, spacing: 12) {
+                        ConciergeQueueProviderSnapshot(
+                            title: "Current",
+                            provider: currentProvider,
+                            accent: BrandPalette.navy
+                        )
+
+                        ConciergeQueueProviderSnapshot(
+                            title: "Backup",
+                            provider: suggestedReplacement.provider,
+                            accent: BrandPalette.teal
+                        )
+                    }
+
+                    ConciergeReplacementSafetyPanel(
+                        summary: suggestedReplacement.safetySummary,
+                        compact: true
+                    )
+
+                    ConciergeReplacementImpactPanel(
+                        summary: suggestedReplacement.impactSummary,
+                        compact: true
+                    )
+                } else {
+                    ConciergeQueueProviderSnapshot(
+                        title: "Current",
+                        provider: currentProvider,
+                        accent: BrandPalette.navy
+                    )
+                }
+            }
+
+            if entry.isLoadingSuggestion {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Ranking the best backup for this booking now.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } else if let reason = entry.manualReviewReason {
+                HStack(alignment: .top, spacing: 10) {
+                    Circle()
+                        .fill(BrandPalette.coral.opacity(0.14))
+                        .frame(width: 28, height: 28)
+                        .overlay {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(BrandPalette.coral)
+                        }
+
+                    Text(reason)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(BrandPalette.coral.opacity(0.08))
+                )
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(BrandPalette.card)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(
+                    isAutoFocused
+                        ? BrandPalette.teal.opacity(0.9)
+                        : (isStaged ? BrandPalette.teal.opacity(0.45) : .clear),
+                    lineWidth: isAutoFocused ? 2.5 : (isStaged ? 1.5 : 0)
+                )
+        }
+        .shadow(
+            color: isAutoFocused ? BrandPalette.teal.opacity(0.18) : .clear,
+            radius: isAutoFocused ? 18 : 0,
+            x: 0,
+            y: isAutoFocused ? 8 : 0
+        )
+    }
+}
+
+private struct ConciergeBatchReviewStagingPanel: View {
+    let stagedCount: Int
+    let approvedCount: Int
+    let pendingCount: Int
+    let additionalReadyCount: Int
+    let refreshHighlightedCount: Int
+    let notes: [ConciergeBatchReviewStagedNote]
+    let isApplying: Bool
+    let onApply: () -> Void
+    var onApproveAllPending: (() -> Void)? = nil
+    let onDefer: () -> Void
+    var onClearAllRefreshHighlights: (() -> Void)? = nil
+    var onApproveNote: ((ConciergeBatchReviewStagedNote) -> Void)? = nil
+    var onClearRefreshHighlightNote: ((ConciergeBatchReviewStagedNote) -> Void)? = nil
+    var onRemoveApproval: ((ConciergeBatchReviewStagedNote) -> Void)? = nil
+    var onDeferNote: ((ConciergeBatchReviewStagedNote) -> Void)? = nil
+
+    private var approvedNotes: [ConciergeBatchReviewStagedNote] {
+        notes.filter(\.isApproved)
+    }
+
+    private var pendingNotes: [ConciergeBatchReviewStagedNote] {
+        notes.filter { $0.isApproved == false }
+    }
+
+    private var refreshHighlightedNotes: [ConciergeBatchReviewStagedNote] {
+        notes.filter(\.isRefreshHighlighted)
+    }
+
+    private var approvedPreviewLines: [String] {
+        approvedNotes.prefix(3).map { note in
+            "\(note.title): \(note.afterLine)"
+        }
+    }
+
+    private var pendingPreviewLines: [String] {
+        pendingNotes.prefix(3).map { note in
+            if note.isInvalidated {
+                return "\(note.title): Approval cleared because the booking or ranked backup changed, so this row needs a quick recheck."
+            }
+
+            return "\(note.title): This row stays out of the staged mini-batch until you approve it or defer it back into the main queue."
+        }
+    }
+
+    private var refreshHighlightPreviewLines: [String] {
+        refreshHighlightedNotes.prefix(3).map { note in
+            "\(note.title): Re-approved from the refresh summary and handed back into the staged mini-batch."
+        }
+    }
+
+    private var title: String {
+        stagedCount == 1 ? "1 freshly ranked backup is staged" : "\(stagedCount) freshly ranked backups are staged"
+    }
+
+    private var message: String {
+        if approvedCount == 0 {
+            return "Approve the staged rows you trust before Real O Who applies this mini-batch, or defer any row that should fall back into the main ready queue."
+        }
+
+        if pendingCount > 0, additionalReadyCount > 0 {
+            return "\(approvedCount) staged row\(approvedCount == 1 ? "" : "s") are approved to switch now, \(pendingCount) still need a decision, and \(additionalReadyCount) other ready booking\(additionalReadyCount == 1 ? "" : "s") remain outside this staged mini-batch."
+        }
+
+        if pendingCount > 0 {
+            return "\(approvedCount) staged row\(approvedCount == 1 ? "" : "s") are approved to switch now, and \(pendingCount) still need to be approved or deferred."
+        }
+
+        if additionalReadyCount > 0 {
+            return "Apply the approved staged rows now, or defer them into the broader ready queue with the other \(additionalReadyCount) ready booking\(additionalReadyCount == 1 ? "" : "s")."
+        }
+
+        return "These newly ready rows are approved and ready to apply as their own mini-batch."
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.headline)
+
+            Text(message)
+                .foregroundStyle(.secondary)
+
+            AdaptiveTagGrid(minimum: 130) {
+                MiniStatPanel(
+                    title: "Approved",
+                    value: "\(approvedCount)",
+                    subtitle: approvedCount == 0 ? "No staged rows approved yet" : "Ready for staged apply"
+                )
+                MiniStatPanel(
+                    title: "Pending",
+                    value: "\(pendingCount)",
+                    subtitle: pendingCount == 0 ? "No staged decisions left" : "Still need approval or deferral"
+                )
+                if refreshHighlightedCount > 0 {
+                    MiniStatPanel(
+                        title: "Refreshed",
+                        value: "\(refreshHighlightedCount)",
+                        subtitle: refreshHighlightedCount == 1
+                            ? "Just re-approved from refresh"
+                            : "Just re-approved from refresh"
+                    )
+                }
+            }
+
+            if refreshHighlightedNotes.isEmpty == false {
+                ConciergeBatchReviewStagedDecisionLane(
+                    title: refreshHighlightedCount == 1
+                        ? "1 row just came back from refresh"
+                        : "\(refreshHighlightedCount) rows just came back from refresh",
+                    message: "These staged rows were re-approved from the reopen summary and handed back into the live mini-batch. The extra cue steps down automatically once you apply them or mark them reviewed here.",
+                    lines: refreshHighlightPreviewLines,
+                    tint: BrandPalette.teal
+                )
+
+                if let onClearAllRefreshHighlights {
+                    HStack {
+                        Spacer(minLength: 0)
+
+                        Button(refreshHighlightedCount == 1 ? "Mark refreshed row reviewed" : "Mark refreshed rows reviewed") {
+                            onClearAllRefreshHighlights()
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(BrandPalette.teal)
+                    }
+                }
+            }
+
+            if approvedNotes.isEmpty == false {
+                ConciergeBatchReviewStagedDecisionLane(
+                    title: approvedCount == 1 ? "1 row will apply now" : "\(approvedCount) rows will apply now",
+                    message: approvedCount == 1
+                        ? "This approved backup is already included in the staged mini-batch."
+                        : "These approved backups are already included in the staged mini-batch.",
+                    lines: approvedPreviewLines,
+                    tint: BrandPalette.teal
+                )
+            }
+
+            if pendingNotes.isEmpty == false {
+                ConciergeBatchReviewStagedDecisionLane(
+                    title: pendingCount == 1 ? "1 row is still waiting on your decision" : "\(pendingCount) rows are still waiting on your decision",
+                    message: "Pending rows stay out of the staged apply until you approve them or defer them into the broader ready queue.",
+                    lines: pendingPreviewLines,
+                    tint: BrandPalette.navy
+                )
+            }
+
+            if approvedNotes.isEmpty == false {
+                notesSection(
+                    title: approvedCount == 1 ? "Approved staged apply" : "Approved staged apply",
+                    subtitle: approvedCount == 1
+                        ? "This row is cleared for the next staged switch."
+                        : "These rows are cleared for the next staged switch.",
+                    tint: BrandPalette.teal,
+                    notes: approvedNotes
+                )
+            }
+
+            if pendingNotes.isEmpty == false {
+                notesSection(
+                    title: pendingCount == 1 ? "Pending decision" : "Pending decisions",
+                    subtitle: pendingCount == 1
+                        ? "This row still needs your approval or deferral."
+                        : "These rows still need your approval or deferral.",
+                    tint: BrandPalette.navy,
+                    notes: pendingNotes
+                )
+            }
+
+            HStack(spacing: 10) {
+                Button(isApplying ? "Applying..." : (approvedCount == 1 ? "Apply approved staged backup" : "Apply approved staged backups")) {
+                    onApply()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(BrandPalette.teal)
+                .disabled(approvedCount == 0 || isApplying)
+
+                if let onApproveAllPending, pendingCount > 0 {
+                    Button(pendingCount == 1 ? "Approve pending row" : "Approve all pending") {
+                        onApproveAllPending()
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(BrandPalette.teal)
+                    .disabled(isApplying)
+                }
+
+                Button(stagedCount == 1 ? "Defer staged row" : "Defer all staged") {
+                    onDefer()
+                }
+                .buttonStyle(.bordered)
+                .tint(BrandPalette.navy)
+                .disabled(stagedCount == 0 || isApplying)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(BrandPalette.panel)
+        )
+    }
+
+    @ViewBuilder
+    private func notesSection(
+        title: String,
+        subtitle: String,
+        tint: Color,
+        notes: [ConciergeBatchReviewStagedNote]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(tint)
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(notes) { note in
+                ConciergeBatchReviewStagedNoteCard(
+                    note: note,
+                    onApprove: onApproveNote == nil ? nil : {
+                        onApproveNote?(note)
+                    },
+                    onClearRefreshHighlight: onClearRefreshHighlightNote == nil ? nil : {
+                        onClearRefreshHighlightNote?(note)
+                    },
+                    onRemoveApproval: onRemoveApproval == nil ? nil : {
+                        onRemoveApproval?(note)
+                    },
+                    onDefer: onDeferNote == nil ? nil : {
+                        onDeferNote?(note)
+                    }
+                )
+            }
+        }
+    }
+}
+
+private struct ConciergeBatchReviewStagedNoteCard: View {
+    let note: ConciergeBatchReviewStagedNote
+    var onApprove: (() -> Void)? = nil
+    var onClearRefreshHighlight: (() -> Void)? = nil
+    var onRemoveApproval: (() -> Void)? = nil
+    var onDefer: (() -> Void)? = nil
+
+    private var statusTint: Color {
+        if note.isInvalidated {
+            return BrandPalette.gold
+        }
+        return note.tint
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Circle()
+                    .fill(note.tint.opacity(0.14))
+                    .frame(width: 30, height: 30)
+                    .overlay {
+                        Image(systemName: note.serviceSymbolName)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(note.tint)
+                    }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(note.title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(statusTitle)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(statusTint)
+                }
+
+                Spacer(minLength: 0)
+
+                Text(statusBadgeTitle)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(statusTint)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(statusTint.opacity(note.isApproved ? 0.18 : 0.1))
+                    )
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(note.isApproved ? "What happens now" : "If you approve this row")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(note.tint)
+                Text(note.afterLine)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text(
+                    actionSummary
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            if note.isRefreshHighlighted {
+                HStack(alignment: .top, spacing: 10) {
+                    Circle()
+                        .fill(BrandPalette.teal.opacity(0.16))
+                        .frame(width: 28, height: 28)
+                        .overlay {
+                            Image(systemName: "checkmark.shield.fill")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(BrandPalette.teal)
+                        }
+
+                    Text("This staged row was re-approved from the refresh summary, so it is back in the mini-batch and ready to follow through right away.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(BrandPalette.teal.opacity(0.08))
+                )
+            }
+
+            if note.isInvalidated {
+                HStack(alignment: .top, spacing: 10) {
+                    Circle()
+                        .fill(BrandPalette.gold.opacity(0.16))
+                        .frame(width: 28, height: 28)
+                        .overlay {
+                            Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(BrandPalette.gold)
+                        }
+
+                    Text("The saved approval was cleared because the booking or top-ranked backup changed. Re-approve this row only if the updated switch still looks right.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(BrandPalette.gold.opacity(0.08))
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Before")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(note.tint)
+                Text(note.beforeLine)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(note.isApproved ? "Why it is safe now" : "Why it is a strong backup")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(note.tint)
+
+                ForEach(Array(note.whySafe.prefix(2).enumerated()), id: \.offset) { _, line in
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle()
+                            .fill(note.tint.opacity(0.82))
+                            .frame(width: 6, height: 6)
+                            .padding(.top, 5)
+
+                        Text(line)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    approvalButtons
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    approvalButtons
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(note.tint.opacity(0.08))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(
+                    note.isRefreshHighlighted ? BrandPalette.teal.opacity(0.4) : .clear,
+                    lineWidth: note.isRefreshHighlighted ? 1.5 : 0
+                )
+        }
+    }
+
+    private var statusTitle: String {
+        if note.isInvalidated {
+            return "Approval cleared and waiting on your recheck"
+        }
+        if note.isRefreshHighlighted {
+            return "Re-approved from refresh and ready now"
+        }
+
+        return note.isApproved ? "Included in the staged apply" : "Waiting on your decision"
+    }
+
+    private var statusBadgeTitle: String {
+        if note.isInvalidated {
+            return "Recheck required"
+        }
+        if note.isRefreshHighlighted {
+            return "Refreshed"
+        }
+
+        return note.isApproved ? "Approved" : "Pending"
+    }
+
+    private var actionSummary: String {
+        if note.isInvalidated {
+            return "This row stays out of the staged mini-batch until you review the updated switch and approve it again or defer it."
+        }
+
+        return note.isApproved
+            ? "This row will be included the next time you apply the staged mini-batch."
+            : "This row stays out of the staged mini-batch until you approve it or defer it."
+    }
+
+    @ViewBuilder
+    private var approvalButtons: some View {
+        if note.isApproved {
+            if note.isRefreshHighlighted, let onClearRefreshHighlight {
+                Button("Mark reviewed") {
+                    onClearRefreshHighlight()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(BrandPalette.teal)
+            }
+
+            if let onRemoveApproval {
+                Button("Keep pending") {
+                    onRemoveApproval()
+                }
+                .buttonStyle(.bordered)
+                .tint(note.tint)
+            }
+        } else if let onApprove {
+            Button("Approve for staged apply") {
+                onApprove()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(note.tint)
+        }
+
+        if let onDefer {
+            Button("Defer this row") {
+                onDefer()
+            }
+            .buttonStyle(.bordered)
+            .tint(BrandPalette.navy)
+        }
+    }
+}
+
+private struct ConciergeBatchReviewStagedDecisionLane: View {
+    let title: String
+    let message: String
+    let lines: [String]
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                HStack(alignment: .top, spacing: 8) {
+                    Circle()
+                        .fill(tint.opacity(0.82))
+                        .frame(width: 6, height: 6)
+                        .padding(.top, 5)
+
+                    Text(line)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(tint.opacity(0.08))
+        )
+    }
+}
+
+private struct ConciergeBatchReviewApprovalRefreshPanel: View {
+    let summary: ConciergeBatchReviewApprovalRefreshSummary
+    let actionableItems: [ConciergeBatchReviewApprovalRefreshItem]
+    var onApproveAll: (() -> Void)? = nil
+    var onApproveItem: ((ConciergeBatchReviewApprovalRefreshItem) -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Circle()
+                    .fill(BrandPalette.teal.opacity(0.14))
+                    .frame(width: 34, height: 34)
+                    .overlay {
+                        Image(systemName: "checkmark.shield.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(BrandPalette.teal)
+                    }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(summary.title)
+                        .font(.headline)
+                    Text(summary.message)
+                        .foregroundStyle(.secondary)
+                    Text(summary.supporting)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if summary.immediateReapprovalItems.isEmpty == false {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Safe to re-approve now")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(BrandPalette.teal)
+
+                    ForEach(summary.immediateReapprovalItems) { item in
+                        approvalRefreshRow(item)
+                    }
+
+                    if let onApproveAll, actionableItems.isEmpty == false {
+                        Button(actionableItems.count == 1 ? "Re-approve safe row" : "Re-approve all safe rows") {
+                            onApproveAll()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(BrandPalette.teal)
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(BrandPalette.panel)
+        )
+    }
+
+    @ViewBuilder
+    private func approvalRefreshRow(_ item: ConciergeBatchReviewApprovalRefreshItem) -> some View {
+        let isActionable = actionableItems.contains { $0.id == item.id }
+
+        HStack(alignment: .top, spacing: 10) {
+            Circle()
+                .fill(BrandPalette.teal.opacity(0.82))
+                .frame(width: 6, height: 6)
+                .padding(.top, 6)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title)
+                    .font(.footnote.weight(.semibold))
+                Text(item.supporting)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+
+            if let onApproveItem, isActionable {
+                Button("Re-approve") {
+                    onApproveItem(item)
+                }
+                .buttonStyle(.bordered)
+                .tint(BrandPalette.teal)
+            } else if isActionable == false {
+                Text("Already updated")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct ConciergeBatchReviewApprovalRefreshCloseoutPanel: View {
+    let summary: ConciergeBatchReviewApprovalRefreshCloseoutSummary
+    var jumpTitle: String? = nil
+    var onJumpToReview: (() -> Void)? = nil
+    var onDismiss: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Circle()
+                    .fill(BrandPalette.teal.opacity(0.14))
+                    .frame(width: 34, height: 34)
+                    .overlay {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(BrandPalette.teal)
+                    }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(summary.title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(summary.message)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text(summary.supporting)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if jumpTitle != nil || onDismiss != nil {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        actionButtons
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        actionButtons
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(BrandPalette.teal.opacity(0.08))
+        )
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        if let jumpTitle, let onJumpToReview {
+            Button(jumpTitle) {
+                onJumpToReview()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(BrandPalette.teal)
+        }
+
+        if let onDismiss {
+            Button("Hide update") {
+                onDismiss()
+            }
+            .buttonStyle(.bordered)
+            .tint(BrandPalette.navy)
+        }
+    }
+}
+
+private struct ConciergeBatchReviewRefreshOutcomePanel: View {
+    let summary: ConciergeBatchReviewRefreshSummary
+    var jumpLaneProgress: ConciergeBatchReviewRefreshLaneProgress? = nil
+    var bookingLaneProgress: ConciergeBatchReviewRefreshLaneProgress? = nil
+    var visitedBookingItemIDs: [String] = []
+    var reactivatedBookingItemIDs: [String] = []
+    var isBookingLaneHidden = false
+    var showsReactivatedBookingLane = false
+    var bookingLaneReactivationCompletionMessage: String? = nil
+    var bookingLaneReactivationCompletionSupporting: String? = nil
+    var completionReviewActionTitle: String? = nil
+    var completionReviewProgress: ConciergeBatchReviewRefreshLaneProgress? = nil
+    var completionReviewLastItemID: String? = nil
+    var isCompletionReviewComplete = false
+    var onJumpLane: (() -> Void)? = nil
+    var onBookingLane: (() -> Void)? = nil
+    var onHideCompletedBookingLane: (() -> Void)? = nil
+    var onRestoreBookingLane: (() -> Void)? = nil
+    var onHideCompletedBookingLaneAfterReactivation: (() -> Void)? = nil
+    var onDismissBookingLaneReactivationCompletion: (() -> Void)? = nil
+    var onReviewClearedCycle: (() -> Void)? = nil
+    var onAction: ((ConciergeBatchReviewRefreshOutcomeItem) -> Void)? = nil
+
+    private var bookingLaneActionTitle: String {
+        if summary.bookingItems.count == 1 {
+            return bookingLaneProgress == nil ? "Open booking follow-through" : "Reopen booking follow-through"
+        }
+
+        guard let bookingLaneProgress else {
+            return "Open booking follow-through"
+        }
+
+        return bookingLaneProgress.remainingCount == 0
+            ? "Revisit booking follow-through"
+            : "Open next unvisited booking"
+    }
+
+    private var bookingLaneIsComplete: Bool {
+        bookingLaneProgress?.remainingCount == 0 && bookingLaneProgress != nil
+    }
+
+    private var reactivatedBookingItems: [ConciergeBatchReviewRefreshOutcomeItem] {
+        let reactivatedIDs = Set(reactivatedBookingItemIDs)
+        let visitedIDs = Set(visitedBookingItemIDs)
+        return summary.bookingItems.filter {
+            reactivatedIDs.contains($0.id) && visitedIDs.contains($0.id) == false
+        }
+    }
+
+    private var completedReactivatedBookingItems: [ConciergeBatchReviewRefreshOutcomeItem] {
+        guard bookingLaneReactivationCompletionMessage != nil else {
+            return []
+        }
+
+        let reactivatedIDs = Set(reactivatedBookingItemIDs)
+        return summary.bookingItems.filter { reactivatedIDs.contains($0.id) }
+    }
+
+    private var bookingLaneReactivationSupporting: String {
+        let titles = reactivatedBookingItems.map(\.title)
+        guard titles.isEmpty == false else {
+            return "The booking lane stayed hidden only while every row there had already been revisited."
+        }
+
+        let visibleTitles = Array(titles.prefix(3))
+        var summaryLine = "Needs revisit now: " + visibleTitles.joined(separator: " • ")
+        if titles.count > visibleTitles.count {
+            summaryLine += " • +\(titles.count - visibleTitles.count) more"
+        }
+        return summaryLine
+    }
+
+    private var bookingLaneReactivationMessage: String? {
+        guard showsReactivatedBookingLane,
+              let bookingLaneProgress,
+              bookingLaneProgress.remainingCount > 0 else {
+            return nil
+        }
+
+        let revisitedCount = max(0, bookingLaneProgress.totalCount - bookingLaneProgress.remainingCount)
+        let nextTitle = bookingLaneProgress.nextItemID.flatMap { nextID in
+            summary.bookingItems.first(where: { $0.id == nextID })?.title
+        }
+
+        var message = "\(bookingLaneProgress.remainingCount) booking row\(bookingLaneProgress.remainingCount == 1 ? "" : "s") still need follow-through, so Real O Who reopened this lane after it had previously been tucked away."
+        if revisitedCount > 0 {
+            message += " \(revisitedCount) row\(revisitedCount == 1 ? " is" : "s are") already revisited."
+        }
+        if let nextTitle {
+            message += " Next up: \(nextTitle)."
+        }
+        return message
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Refresh follow-through")
+                .font(.headline)
+
+            Text("Real O Who tracked which refreshed staged rows were already handled before this review reopened.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if summary.jumpItems.isEmpty == false {
+                laneSection(
+                    title: summary.jumpItems.count == 1
+                        ? "Still live in this review"
+                        : "Still live in this review",
+                    subtitle: "These refreshed rows are still active below, so you can jump straight to the matching staged or review card without leaving the reopened batch review.",
+                    items: summary.jumpItems,
+                    tint: BrandPalette.teal,
+                    actionTitle: summary.jumpItems.count == 1
+                        ? "Jump to live row"
+                        : (jumpLaneProgress == nil ? "Jump through live rows" : "Jump to next live row"),
+                    laneProgress: jumpLaneProgress,
+                    onLaneAction: onJumpLane
+                )
+            }
+
+            if summary.bookingItems.isEmpty == false {
+                if isBookingLaneHidden {
+                    collapsedBookingLaneSection
+                } else {
+                    if let bookingLaneReactivationMessage {
+                        HighlightInformationCard(
+                            title: "Booking follow-through is back",
+                            message: bookingLaneReactivationMessage,
+                            supporting: bookingLaneReactivationSupporting
+                        )
+                    }
+
+                    if let bookingLaneReactivationCompletionMessage {
+                        ConciergeBatchReviewBookingLaneReactivationCompletionPanel(
+                            message: bookingLaneReactivationCompletionMessage,
+                            supporting: bookingLaneReactivationCompletionSupporting,
+                            reviewActionTitle: completionReviewActionTitle,
+                            reviewProgress: completionReviewProgress,
+                            isReviewComplete: isCompletionReviewComplete,
+                            onReview: onReviewClearedCycle,
+                            onHide: onHideCompletedBookingLaneAfterReactivation,
+                            onDismiss: onDismissBookingLaneReactivationCompletion
+                        )
+                    }
+
+                    laneSection(
+                        title: summary.bookingItems.count == 1
+                            ? "Already moved into booking follow-through"
+                            : "Already moved into booking follow-through",
+                        subtitle: "These refreshed rows were already handled before the reopen, so the next useful place to inspect them is the booking flow itself.",
+                        items: summary.bookingItems,
+                        tint: BrandPalette.navy,
+                        actionTitle: bookingLaneActionTitle,
+                        laneProgress: bookingLaneProgress,
+                        onLaneAction: onBookingLane
+                    )
+
+                    if bookingLaneIsComplete,
+                       let onHideCompletedBookingLane {
+                        HStack {
+                            Spacer(minLength: 0)
+
+                            Button("Hide completed booking lane") {
+                                onHideCompletedBookingLane()
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(BrandPalette.navy)
+                        }
+                    }
+                }
+            }
+
+            if summary.informationalItems.isEmpty == false {
+                laneSection(
+                    title: "Tracked outcome",
+                    subtitle: "These rows were accounted for in the refresh loop, but there is no direct jump target left in the reopened review right now.",
+                    items: summary.informationalItems,
+                    tint: BrandPalette.gold
+                )
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(BrandPalette.panel)
+        )
+    }
+
+    @ViewBuilder
+    private var collapsedBookingLaneSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Booking follow-through tucked away")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(BrandPalette.navy)
+
+            Text("Every booking row in this refresh lane has already been revisited. Real O Who hid that completed lane so the review can stay focused on the live rows below.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if let bookingLaneProgress {
+                Text(bookingLaneProgress.message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let onRestoreBookingLane {
+                HStack {
+                    Spacer(minLength: 0)
+
+                    Button("Restore booking lane") {
+                        onRestoreBookingLane()
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(BrandPalette.navy)
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(BrandPalette.navy.opacity(0.08))
+        )
+    }
+
+    @ViewBuilder
+    private func laneSection(
+        title: String,
+        subtitle: String,
+        items: [ConciergeBatchReviewRefreshOutcomeItem],
+        tint: Color,
+        actionTitle: String? = nil,
+        laneProgress: ConciergeBatchReviewRefreshLaneProgress? = nil,
+        onLaneAction: (() -> Void)? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(tint)
+
+                    Text(subtitle)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let actionTitle,
+                   let onLaneAction {
+                    HStack {
+                        Spacer(minLength: 0)
+
+                        Button(actionTitle) {
+                            onLaneAction()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(tint)
+                    }
+                }
+
+                if let laneProgress {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(laneProgress.title)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(tint)
+
+                        Text(laneProgress.message)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(tint.opacity(0.08))
+                    )
+                }
+            }
+
+            ForEach(Array(items.prefix(3).enumerated()), id: \.offset) { _, item in
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: 10) {
+                        Circle()
+                            .fill(item.tint.opacity(0.16))
+                            .frame(width: 26, height: 26)
+                            .overlay {
+                                Image(systemName: item.symbolName)
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(item.tint)
+                            }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(item.title)
+                                    .font(.subheadline.weight(.semibold))
+
+                                if jumpLaneProgress?.lastItemID == item.id {
+                                    Text(jumpLaneProgress?.highlightTitle ?? "Last jumped")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(BrandPalette.teal)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(
+                                            Capsule(style: .continuous)
+                                                .fill(BrandPalette.teal.opacity(0.12))
+                                        )
+                                }
+
+                                if visitedBookingItemIDs.contains(item.id),
+                                   bookingLaneProgress?.lastItemID != item.id {
+                                    Text("Visited")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(BrandPalette.navy)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(
+                                            Capsule(style: .continuous)
+                                                .fill(BrandPalette.navy.opacity(0.12))
+                                        )
+                                }
+
+                                if bookingLaneProgress?.nextItemID == item.id,
+                                   bookingLaneProgress?.remainingCount ?? 0 > 0 {
+                                    Text("Next up")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(BrandPalette.gold)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(
+                                            Capsule(style: .continuous)
+                                                .fill(BrandPalette.gold.opacity(0.14))
+                                        )
+                                }
+
+                                if reactivatedBookingItems.contains(where: { $0.id == item.id }) {
+                                    Text("Needs revisit")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(BrandPalette.coral)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(
+                                            Capsule(style: .continuous)
+                                                .fill(BrandPalette.coral.opacity(0.14))
+                                        )
+                                }
+
+                                if completionReviewLastItemID == item.id,
+                                   completedReactivatedBookingItems.contains(where: { $0.id == item.id }) {
+                                    Text(completionReviewProgress?.highlightTitle ?? "Last reviewed")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(BrandPalette.navy)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(
+                                            Capsule(style: .continuous)
+                                                .fill(BrandPalette.navy.opacity(0.12))
+                                        )
+                                }
+
+                                if completedReactivatedBookingItems.contains(where: { $0.id == item.id }) {
+                                    Text("Cleared cycle")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(BrandPalette.teal)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(
+                                            Capsule(style: .continuous)
+                                                .fill(BrandPalette.teal.opacity(0.14))
+                                        )
+                                }
+
+                                Text(item.kind.title)
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(item.kind.tint)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        Capsule(style: .continuous)
+                                            .fill(item.kind.tint.opacity(0.12))
+                                    )
+                            }
+                            Text(item.supporting)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if let action = item.action,
+                       let onAction {
+                        HStack {
+                            Spacer(minLength: 0)
+
+                            Button(action.title) {
+                                onAction(item)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(item.tint)
+                        }
+                    }
+                }
+            }
+
+            if items.count > 3 {
+                Text("And \(items.count - 3) more row\(items.count - 3 == 1 ? "" : "s").")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(tint)
+            }
+        }
+    }
+}
+
+private struct ConciergeBatchReviewBookingLaneReactivationCompletionPanel: View {
+    let message: String
+    var supporting: String? = nil
+    var reviewActionTitle: String? = nil
+    var reviewProgress: ConciergeBatchReviewRefreshLaneProgress? = nil
+    var isReviewComplete = false
+    var onReview: (() -> Void)? = nil
+    var onHide: (() -> Void)? = nil
+    var onDismiss: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Reactivated booking follow-through is clear again")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(BrandPalette.teal)
+
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if let supporting {
+                Text(supporting)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let reviewProgress {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(reviewProgress.title)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(BrandPalette.navy)
+
+                    Text(reviewProgress.message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(BrandPalette.navy.opacity(0.08))
+                )
+            }
+
+            Text(isReviewComplete
+                ? "Every cleared row from this reactivated cycle has now been reviewed. You can tuck this lane away again, or keep it visible if you want one final look."
+                : "You can tuck this lane away again now, or keep it visible while you finish the cleared-cycle review."
+            )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    actionButtons
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    actionButtons
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(BrandPalette.teal.opacity(0.08))
+        )
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        if let reviewActionTitle, let onReview {
+            Button(reviewActionTitle) {
+                onReview()
+            }
+            .buttonStyle(.bordered)
+            .tint(BrandPalette.navy)
+        }
+
+        if let onHide {
+            Button("Hide booking lane again") {
+                onHide()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(BrandPalette.teal)
+        }
+
+        if let onDismiss {
+            Button("Keep it visible") {
+                onDismiss()
+            }
+            .buttonStyle(.bordered)
+            .tint(BrandPalette.navy)
+        }
+    }
+}
+
+private struct ConciergeBatchReviewRankingFocusPanel: View {
+    let readyCount: Int
+    let onJump: () -> Void
+
+    private var buttonTitle: String {
+        readyCount == 1 ? "Jump to ready row" : "Jump to ready rows"
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Circle()
+                .fill(BrandPalette.teal.opacity(0.16))
+                .frame(width: 34, height: 34)
+                .overlay {
+                    Image(systemName: "location.viewfinder")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(BrandPalette.teal)
+                }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Fresh recovery rows are ready below")
+                    .font(.subheadline.weight(.semibold))
+                Text("Real O Who has moved the newest ready backup\(readyCount == 1 ? "" : "s") to the top of the apply section and can jump you there now.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+
+            Button(buttonTitle) {
+                onJump()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(BrandPalette.teal)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(BrandPalette.teal.opacity(0.08))
+        )
+    }
+}
+
+private struct ConciergeBatchReviewRowChangePanel: View {
+    let summary: ConciergeBatchReviewRowChangeSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Circle()
+                    .fill(summary.tint.opacity(0.16))
+                    .frame(width: 30, height: 30)
+                    .overlay {
+                        Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(summary.tint)
+                    }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(summary.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+
+                    Text(summary.supporting)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ForEach(Array(summary.highlights.prefix(3).enumerated()), id: \.offset) { _, line in
+                HStack(alignment: .top, spacing: 8) {
+                    Circle()
+                        .fill(summary.tint.opacity(0.82))
+                        .frame(width: 6, height: 6)
+                        .padding(.top, 5)
+
+                    Text(line)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(summary.tint.opacity(0.08))
+        )
+    }
+}
+
+private struct ConciergeBatchReviewSuggestedActionPanel: View {
+    let action: ConciergeBatchReviewSuggestedAction
+    var onAction: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Suggested next step")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(action.tint)
+
+            Text(action.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            Text(action.supporting)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if let buttonTitle = action.buttonTitle,
+               let onAction {
+                HStack {
+                    Spacer(minLength: 0)
+
+                    Button(buttonTitle) {
+                        onAction()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(action.tint)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(action.tint.opacity(0.08))
+        )
+    }
+}
+
+private struct ConciergeBatchReviewCompletionGuidancePanel: View {
+    let guidance: ConciergeBatchReviewCompletionGuidance
+    var closeSafeRowsTitle: String? = nil
+    var onCloseSafeRows: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(guidance.title)
+                .font(.headline)
+
+            Text(guidance.message)
+                .foregroundStyle(.secondary)
+
+            if guidance.safeToCloseItems.isEmpty == false {
+                completionSection(
+                    title: "Safe to close now",
+                    items: guidance.safeToCloseItems,
+                    tint: BrandPalette.teal
+                )
+            }
+
+            if guidance.needsFinalStepItems.isEmpty == false {
+                completionSection(
+                    title: "Still needs one last step",
+                    items: guidance.needsFinalStepItems,
+                    tint: BrandPalette.coral
+                )
+            }
+
+            if let closeSafeRowsTitle, let onCloseSafeRows {
+                HStack {
+                    Spacer(minLength: 0)
+
+                    Button(closeSafeRowsTitle) {
+                        onCloseSafeRows()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(BrandPalette.teal)
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(BrandPalette.panel)
+        )
+    }
+
+    @ViewBuilder
+    private func completionSection(
+        title: String,
+        items: [ConciergeBatchReviewCompletionItem],
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(tint)
+
+            ForEach(Array(items.prefix(3).enumerated()), id: \.offset) { _, item in
+                HStack(alignment: .top, spacing: 10) {
+                    Circle()
+                        .fill(item.tint.opacity(0.16))
+                        .frame(width: 26, height: 26)
+                        .overlay {
+                            Image(systemName: item.symbolName)
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(item.tint)
+                        }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+
+                        Text(item.supporting)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if items.count > 3 {
+                Text("And \(items.count - 3) more row\(items.count - 3 == 1 ? "" : "s").")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(tint)
+            }
+        }
+    }
+}
+
+private struct ConciergeBatchReviewNextActionSectionHeader: View {
+    let group: ConciergeBatchReviewNextActionGroup
+    let count: Int
+    var actions: [ConciergeBatchReviewSectionAction] = []
+    var onAction: ((ConciergeBatchReviewSectionAction) -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 12) {
+                Label(group.title, systemImage: group.symbolName)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(group.tint)
+
+                Text(count == 1 ? "1 row" : "\(count) rows")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 0)
+            }
+
+            Text(group.supporting)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if actions.isEmpty == false, let onAction {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(actions) { action in
+                            Button(action.title) {
+                                onAction(action)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(action.tint)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(actions) { action in
+                            Button(action.title) {
+                                onAction(action)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(action.tint)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -14666,16 +20619,1377 @@ private struct PostSaleFeedbackContext: Identifiable {
     }
 }
 
+private enum PostSaleConciergeBookingFocus: String {
+    case standard
+    case replacement
+}
+
+private enum ConciergeReplacementWeighting {
+    case balanced
+    case fastestRecovery
+    case qualityFirst
+    case bestValue
+}
+
+private struct ConciergeManualReviewContext: Equatable {
+    let title: String
+    let message: String
+    let supporting: String
+
+    var id: String {
+        [title, message, supporting].joined(separator: "|")
+    }
+}
+
+private enum ConciergeBatchReviewRowState: String, Equatable {
+    case ready
+    case manualReview
+    case loading
+    case unavailable
+
+    var title: String {
+        switch self {
+        case .ready:
+            return "Ready to switch"
+        case .manualReview:
+            return "Manual review"
+        case .loading:
+            return "Ranking backup"
+        case .unavailable:
+            return "Unavailable"
+        }
+    }
+}
+
+private struct ConciergeBatchReviewRowSnapshot: Equatable {
+    let id: String
+    let reviewState: ConciergeBatchReviewRowState
+    let providerID: String?
+    let providerName: String?
+    let suggestedProviderID: String?
+    let suggestedProviderName: String?
+    let scheduledFor: Date?
+    let isProviderConfirmed: Bool
+    let followUpCount: Int
+    let snoozedUntil: Date?
+    let hasOpenIssue: Bool
+    let hasResolvedIssue: Bool
+    let issueTitle: String?
+    let isQuoteApproved: Bool
+    let invoiceUploadedAt: Date?
+    let paymentConfirmedAt: Date?
+    let manualReviewReason: String?
+}
+
+private struct ConciergeBatchReviewReturnContext: Equatable {
+    let hubTitle: String
+    let itemIDs: [String]
+    let itemTitlesByID: [String: String]
+    let itemReferencesByID: [String: ConciergeBatchReviewEntryReference]
+    let previousSnapshots: [ConciergeBatchReviewRowSnapshot]
+    let stagedEntryIDs: [String]
+    let stagedApprovalFingerprints: [String: String]
+    let refreshHighlightedStagedEntryIDs: [String]
+    let reviewedRefreshHighlightEntryIDs: [String]
+    let appliedRefreshHighlightEntryIDs: [String]
+    let visitedRefreshBookingEntryIDs: [String]
+    let hasHiddenCompletedBookingLane: Bool
+    let hasActiveBookingLaneReactivation: Bool
+    let hasDismissedBookingLaneReactivationCompletion: Bool
+    let reactivatedRefreshBookingEntryIDs: [String]
+    let reactivationCompletionReviewLastItemID: String?
+    let reviewedReactivationCompletionItemIDs: [String]
+}
+
+private struct ConciergeBatchReviewRefreshSummary {
+    let title: String
+    let message: String
+    let supporting: String
+    let appliedRefreshItems: [ConciergeBatchReviewRefreshOutcomeItem]
+    let reviewedRefreshItems: [ConciergeBatchReviewRefreshOutcomeItem]
+
+    var allItems: [ConciergeBatchReviewRefreshOutcomeItem] {
+        appliedRefreshItems + reviewedRefreshItems
+    }
+
+    var jumpItems: [ConciergeBatchReviewRefreshOutcomeItem] {
+        allItems.filter { $0.action?.kind == .jumpToReviewRow }
+    }
+
+    var bookingItems: [ConciergeBatchReviewRefreshOutcomeItem] {
+        allItems.filter { $0.action?.kind == .openBooking }
+    }
+
+    var informationalItems: [ConciergeBatchReviewRefreshOutcomeItem] {
+        allItems.filter { $0.action == nil }
+    }
+}
+
+private enum ConciergeBatchReviewRefreshOutcomeKind: Equatable {
+    case applied
+    case reviewed
+
+    var title: String {
+        switch self {
+        case .applied:
+            return "Applied"
+        case .reviewed:
+            return "Reviewed"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .applied:
+            return BrandPalette.teal
+        case .reviewed:
+            return BrandPalette.navy
+        }
+    }
+}
+
+private enum ConciergeBatchReviewRefreshOutcomeActionKind: Equatable {
+    case jumpToReviewRow
+    case openBooking
+}
+
+private struct ConciergeBatchReviewRefreshOutcomeAction: Equatable {
+    let title: String
+    let kind: ConciergeBatchReviewRefreshOutcomeActionKind
+}
+
+private struct ConciergeBatchReviewEntryReference: Equatable {
+    let id: String
+    let offerID: UUID
+    let listing: PropertyListing
+    let serviceKind: PostSaleConciergeServiceKind
+    let counterpartLabel: String
+    let counterpartName: String
+}
+
+private struct ConciergeBatchReviewRefreshOutcomeItem: Identifiable {
+    let id: String
+    let kind: ConciergeBatchReviewRefreshOutcomeKind
+    let title: String
+    let supporting: String
+    let tint: Color
+    let symbolName: String
+    let action: ConciergeBatchReviewRefreshOutcomeAction?
+    let entryReference: ConciergeBatchReviewEntryReference?
+}
+
+private struct ConciergeBatchReviewRefreshLaneProgress {
+    let lastItemID: String
+    let title: String
+    let message: String
+    let highlightTitle: String
+    let nextItemID: String?
+    let remainingCount: Int
+    let totalCount: Int
+}
+
+private struct ConciergeBatchReviewApprovalRefreshSummary {
+    let title: String
+    let message: String
+    let supporting: String
+    let immediateReapprovalItems: [ConciergeBatchReviewApprovalRefreshItem]
+}
+
+private struct ConciergeBatchReviewApprovalRefreshItem: Identifiable {
+    let id: String
+    let title: String
+    let supporting: String
+}
+
+private struct ConciergeBatchReviewApprovalRefreshCloseoutSummary {
+    let id = UUID()
+    let title: String
+    let message: String
+    let supporting: String
+}
+
+private struct ConciergeBatchReviewStagedRefreshState {
+    let stagedEntryIDs: [String]
+    let approvalFingerprints: [String: String]
+    let refreshHighlightedEntryIDs: [String]
+    let invalidatedEntryIDs: [String]
+    let summary: ConciergeBatchReviewApprovalRefreshSummary?
+}
+
+private struct ConciergeBatchReviewStagedApprovalFeedback {
+    let title: String
+    let message: String
+    let supporting: String
+}
+
+private struct ConciergeBatchReviewRankingUpdateSummary {
+    let id = UUID()
+    let title: String
+    let message: String
+    let supporting: String
+    let newlyReadyEntryIDs: [String]
+}
+
+private struct ConciergeBatchReviewStagedNote: Identifiable {
+    let id: String
+    let title: String
+    let serviceSymbolName: String
+    let beforeLine: String
+    let afterLine: String
+    let whySafe: [String]
+    let tint: Color
+    let isApproved: Bool
+    let isInvalidated: Bool
+    let isRefreshHighlighted: Bool
+}
+
+private struct ConciergeBatchReviewRowChangeSummary {
+    let title: String
+    let supporting: String
+    let highlights: [String]
+    let tint: Color
+    let marksRecoveryReady: Bool
+}
+
+private enum ConciergeBatchReviewNextActionGroup: String, CaseIterable, Identifiable {
+    case applyRankedBackup
+    case switchProvider
+    case followUp
+    case reviewBooking
+    case waitForRanking
+    case closeNow
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .applyRankedBackup:
+            return "Apply ranked backups"
+        case .switchProvider:
+            return "Open replacement work"
+        case .followUp:
+            return "Follow up with providers"
+        case .reviewBooking:
+            return "Review booking details"
+        case .waitForRanking:
+            return "Waiting for ranking"
+        case .closeNow:
+            return "Safe to close now"
+        }
+    }
+
+    var supporting: String {
+        switch self {
+        case .applyRankedBackup:
+            return "These rows already have a ranked backup ready to apply."
+        case .switchProvider:
+            return "These provider threads need a manual replacement decision next."
+        case .followUp:
+            return "These rows are blocked on direct provider follow-up."
+        case .reviewBooking:
+            return "These rows need a quick booking review before they can leave the queue."
+        case .waitForRanking:
+            return "These rows are still checking local backup options."
+        case .closeNow:
+            return "These rows are stable enough to dismiss from the review."
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .applyRankedBackup:
+            return BrandPalette.teal
+        case .switchProvider:
+            return BrandPalette.coral
+        case .followUp:
+            return BrandPalette.gold
+        case .reviewBooking:
+            return BrandPalette.navy
+        case .waitForRanking:
+            return BrandPalette.sky
+        case .closeNow:
+            return BrandPalette.teal
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .applyRankedBackup:
+            return "arrow.triangle.2.circlepath.circle.fill"
+        case .switchProvider:
+            return "arrow.triangle.branch"
+        case .followUp:
+            return "phone.fill"
+        case .reviewBooking:
+            return "doc.text.magnifyingglass"
+        case .waitForRanking:
+            return "hourglass.circle.fill"
+        case .closeNow:
+            return "checkmark.circle.fill"
+        }
+    }
+}
+
+private enum ConciergeBatchReviewSuggestedActionKind {
+    case applySuggestedReplacement
+    case closeEntry
+    case openEntry
+}
+
+private enum ConciergeBatchReviewSectionActionKind {
+    case applyAll
+    case closeAll
+    case openFirst
+    case logFollowUpAll
+    case snoozeAll
+    case confirmAll
+    case logIssueAll
+}
+
+private struct ConciergeBatchReviewNextActionPlan {
+    let group: ConciergeBatchReviewNextActionGroup
+    let title: String
+    let supporting: String
+    let buttonTitle: String?
+    let tint: Color
+    let kind: ConciergeBatchReviewSuggestedActionKind?
+}
+
+private struct ConciergeBatchReviewSuggestedAction {
+    let title: String
+    let supporting: String
+    let buttonTitle: String?
+    let tint: Color
+    let kind: ConciergeBatchReviewSuggestedActionKind?
+}
+
+private struct ConciergeBatchReviewSectionAction: Identifiable {
+    let title: String
+    let tint: Color
+    let kind: ConciergeBatchReviewSectionActionKind
+
+    var id: String {
+        "\(kind)-\(title)"
+    }
+}
+
+private struct ConciergeBatchReviewStatusAlert: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
+private struct ConciergeBatchReviewNextActionSection: Identifiable {
+    let group: ConciergeBatchReviewNextActionGroup
+    let entries: [ConciergeBatchReplacementReviewEntry]
+
+    var id: String { group.id }
+}
+
+private struct ConciergeBatchReviewCompletionGuidance {
+    let title: String
+    let message: String
+    let safeToCloseItems: [ConciergeBatchReviewCompletionItem]
+    let needsFinalStepItems: [ConciergeBatchReviewCompletionItem]
+}
+
+private struct ConciergeBatchReviewCompletionItem: Identifiable {
+    enum Group {
+        case safeToClose
+        case needsFinalStep
+    }
+
+    let id: String
+    let title: String
+    let supporting: String
+    let symbolName: String
+    let tint: Color
+    let group: Group
+}
+
 private struct PostSaleConciergeBookingContext: Identifiable {
     let offerID: UUID
     let listing: PropertyListing
     let serviceKind: PostSaleConciergeServiceKind
     let counterpartName: String
+    let focus: PostSaleConciergeBookingFocus
+    let preferredProviderID: String?
+    let preferredReplacementStrategy: ConciergeReplacementStrategy
     let currentBooking: PostSaleConciergeBooking?
+    let manualReviewContext: ConciergeManualReviewContext?
+    let batchReviewReturnContext: ConciergeBatchReviewReturnContext?
+
+    init(
+        offerID: UUID,
+        listing: PropertyListing,
+        serviceKind: PostSaleConciergeServiceKind,
+        counterpartName: String,
+        focus: PostSaleConciergeBookingFocus,
+        preferredProviderID: String?,
+        preferredReplacementStrategy: ConciergeReplacementStrategy,
+        currentBooking: PostSaleConciergeBooking?,
+        manualReviewContext: ConciergeManualReviewContext? = nil,
+        batchReviewReturnContext: ConciergeBatchReviewReturnContext? = nil
+    ) {
+        self.offerID = offerID
+        self.listing = listing
+        self.serviceKind = serviceKind
+        self.counterpartName = counterpartName
+        self.focus = focus
+        self.preferredProviderID = preferredProviderID
+        self.preferredReplacementStrategy = preferredReplacementStrategy
+        self.currentBooking = currentBooking
+        self.manualReviewContext = manualReviewContext
+        self.batchReviewReturnContext = batchReviewReturnContext
+    }
 
     var id: String {
-        "\(offerID.uuidString)-\(serviceKind.rawValue)"
+        "\(offerID.uuidString)-\(serviceKind.rawValue)-\(focus.rawValue)-\(preferredProviderID ?? "none")-\(preferredReplacementStrategy.rawValue)-\(manualReviewContext?.id ?? "no-review")-\(batchReviewReturnContext?.itemIDs.joined(separator: ",") ?? "no-return")"
     }
+}
+
+private struct ConciergeBatchReplacementReviewContext: Identifiable {
+    let id = UUID()
+    let title: String
+    let hubTitle: String
+    let strategy: ConciergeReplacementStrategy
+    let entries: [ConciergeBatchReplacementReviewEntry]
+    let initialStagedEntryIDs: [String]
+    let initialApprovedStagedEntryFingerprints: [String: String]
+    let initialRefreshHighlightedStagedEntryIDs: [String]
+    let initialVisitedRefreshBookingEntryIDs: [String]
+    let initialHasHiddenCompletedBookingLane: Bool
+    let initialHasActiveBookingLaneReactivation: Bool
+    let initialHasDismissedBookingLaneReactivationCompletion: Bool
+    let initialReactivatedRefreshBookingEntryIDs: [String]
+    let initialReactivationCompletionReviewLastItemID: String?
+    let initialReviewedReactivationCompletionItemIDs: [String]
+    let refreshSummary: ConciergeBatchReviewRefreshSummary?
+    let approvalRefreshSummary: ConciergeBatchReviewApprovalRefreshSummary?
+}
+
+private struct ConciergeBatchReplacementReviewEntry: Identifiable {
+    let id: String
+    let offerID: UUID
+    let listing: PropertyListing
+    let serviceKind: PostSaleConciergeServiceKind
+    let counterpartLabel: String
+    let counterpartName: String
+    let currentBooking: PostSaleConciergeBooking?
+    let reviewFingerprint: String?
+    var suggestedReplacement: ConciergeReplacementSuggestion?
+    var isLoadingSuggestion: Bool
+    var manualReviewReason: String?
+    var rowChangeSummary: ConciergeBatchReviewRowChangeSummary? = nil
+
+    var canApplySuggestedReplacement: Bool {
+        currentBooking != nil && suggestedReplacement != nil
+    }
+
+    var currentProvider: PostSaleConciergeProvider? {
+        currentBooking?.provider
+    }
+}
+
+private func conciergeManualReviewContext(
+    hubTitle: String,
+    entry: ConciergeBatchReplacementReviewEntry,
+    focus: PostSaleConciergeBookingFocus
+) -> ConciergeManualReviewContext {
+    let reason = entry.manualReviewReason ?? "This provider row still needs a manual review before Real O Who can apply a ranked backup."
+    let supporting: String
+
+    if focus == .replacement {
+        supporting = "Replacement mode is open so you can compare local backups, switch providers manually, or keep the current booking if the handover is back on track."
+    } else if let booking = entry.currentBooking, booking.needsResponseFollowUp {
+        supporting = "Review the provider status, log a follow-up or issue if needed, and then return to the queue once the booking is moving again."
+    } else {
+        supporting = "Review the current provider, confirmation state, and saved booking details before this row goes back through the queue."
+    }
+
+    return ConciergeManualReviewContext(
+        title: "Opened from \(hubTitle) batch review",
+        message: reason,
+        supporting: supporting
+    )
+}
+
+private func conciergeBatchReviewRowSnapshot(
+    for entry: ConciergeBatchReplacementReviewEntry
+) -> ConciergeBatchReviewRowSnapshot {
+    let booking = entry.currentBooking
+    let reviewState: ConciergeBatchReviewRowState
+    if booking == nil {
+        reviewState = .unavailable
+    } else if entry.isLoadingSuggestion {
+        reviewState = .loading
+    } else if entry.canApplySuggestedReplacement {
+        reviewState = .ready
+    } else {
+        reviewState = .manualReview
+    }
+
+    return ConciergeBatchReviewRowSnapshot(
+        id: entry.id,
+        reviewState: reviewState,
+        providerID: booking?.provider.id,
+        providerName: booking?.provider.name,
+        suggestedProviderID: entry.suggestedReplacement?.provider.id,
+        suggestedProviderName: entry.suggestedReplacement?.provider.name,
+        scheduledFor: booking?.scheduledFor,
+        isProviderConfirmed: booking?.isProviderConfirmed ?? false,
+        followUpCount: booking?.followUpCountValue ?? 0,
+        snoozedUntil: booking?.reminderSnoozedUntil,
+        hasOpenIssue: booking?.hasOpenIssue ?? false,
+        hasResolvedIssue: booking?.hasResolvedIssue ?? false,
+        issueTitle: booking?.issueKind?.title,
+        isQuoteApproved: booking?.isQuoteApproved ?? false,
+        invoiceUploadedAt: booking?.invoiceUploadedAt,
+        paymentConfirmedAt: booking?.paymentConfirmedAt,
+        manualReviewReason: entry.manualReviewReason
+    )
+}
+
+private func conciergeBatchReviewRowChangeSummary(
+    previousSnapshot: ConciergeBatchReviewRowSnapshot,
+    refreshedEntry: ConciergeBatchReplacementReviewEntry
+) -> ConciergeBatchReviewRowChangeSummary? {
+    let currentSnapshot = conciergeBatchReviewRowSnapshot(for: refreshedEntry)
+    guard previousSnapshot != currentSnapshot else {
+        return nil
+    }
+
+    var title = "Booking updated"
+    var supporting = "This provider row changed after your last review action."
+    var tint = BrandPalette.sky
+    var highlights: [String] = []
+    var marksRecoveryReady = false
+
+    if previousSnapshot.reviewState != currentSnapshot.reviewState {
+        switch (previousSnapshot.reviewState, currentSnapshot.reviewState) {
+        case (.manualReview, .ready):
+            title = "Now ready to switch"
+            supporting = "Manual review cleared and a ranked backup is ready on this row."
+            tint = BrandPalette.teal
+            marksRecoveryReady = true
+            highlights.append("This booking moved from manual review into ready-to-switch mode.")
+        case (.loading, .ready):
+            title = "Backup ranking complete"
+            supporting = "Local backup ranking finished for this booking."
+            tint = BrandPalette.teal
+            marksRecoveryReady = true
+            highlights.append("Ranking finished and the queue can switch this provider now.")
+        case (.ready, .manualReview), (.loading, .manualReview):
+            title = "Needs manual review again"
+            supporting = "This row moved out of auto-switch mode."
+            tint = BrandPalette.coral
+            highlights.append(
+                currentSnapshot.manualReviewReason
+                    ?? "A new blocker means this booking needs manual review again."
+            )
+        case (.manualReview, .loading):
+            title = "Ranking backup options"
+            supporting = "This row moved back into ranked backup search."
+            tint = BrandPalette.sky
+            highlights.append("Manual review progressed and the app is checking local replacement options again.")
+        case (_, .unavailable):
+            title = "Booking cleared"
+            supporting = "This provider row is no longer active in the settled archive."
+            tint = BrandPalette.coral
+            highlights.append("The active concierge booking cleared out of this review selection.")
+        default:
+            title = "Review state changed"
+            supporting = "This booking moved to a new review state."
+            tint = currentSnapshot.reviewState == .ready ? BrandPalette.teal : BrandPalette.sky
+            highlights.append(
+                "Row moved from \(previousSnapshot.reviewState.title.lowercased()) to \(currentSnapshot.reviewState.title.lowercased())."
+            )
+        }
+    }
+
+    if previousSnapshot.providerID != currentSnapshot.providerID,
+       let providerName = currentSnapshot.providerName {
+        if title == "Booking updated" {
+            title = "Provider updated"
+            supporting = "The active concierge booking is now attached to a different provider."
+            tint = BrandPalette.teal
+        }
+        highlights.append("Current provider is now \(providerName).")
+    }
+
+    if previousSnapshot.suggestedProviderID != currentSnapshot.suggestedProviderID,
+       let suggestedProviderName = currentSnapshot.suggestedProviderName {
+        if title == "Booking updated" {
+            title = "Backup recommendation updated"
+            supporting = "The top-ranked local backup changed on refresh."
+            tint = BrandPalette.sky
+        }
+        highlights.append("Top ranked backup is now \(suggestedProviderName).")
+    }
+
+    if previousSnapshot.scheduledFor != currentSnapshot.scheduledFor,
+       let scheduledFor = currentSnapshot.scheduledFor {
+        if title == "Booking updated" {
+            title = "Schedule updated"
+            supporting = "The concierge service time changed after your last action."
+            tint = BrandPalette.sky
+        }
+        highlights.append("Booked for \(shortDateString(scheduledFor)) at \(timeString(scheduledFor)).")
+    }
+
+    if previousSnapshot.isProviderConfirmed == false && currentSnapshot.isProviderConfirmed {
+        if title == "Booking updated" {
+            title = "Provider confirmed"
+            supporting = "The provider has now confirmed the booking."
+            tint = BrandPalette.teal
+        }
+        highlights.append("Provider confirmation is now on file for this booking.")
+    }
+
+    if currentSnapshot.followUpCount > previousSnapshot.followUpCount {
+        if title == "Booking updated" {
+            title = "Follow-up logged"
+            supporting = "A fresh provider follow-up was recorded on this row."
+            tint = BrandPalette.gold
+        }
+        let addedCount = currentSnapshot.followUpCount - previousSnapshot.followUpCount
+        highlights.append("\(addedCount) new follow-up\(addedCount == 1 ? "" : "s") logged since the last review.")
+    }
+
+    if previousSnapshot.snoozedUntil != currentSnapshot.snoozedUntil {
+        if let snoozedUntil = currentSnapshot.snoozedUntil {
+            if title == "Booking updated" {
+                title = "Reminder snoozed"
+                supporting = "The provider reminder window was paused for this booking."
+                tint = BrandPalette.gold
+            }
+            highlights.append("Reminder snoozed until \(shortDateString(snoozedUntil)) at \(timeString(snoozedUntil)).")
+        } else if previousSnapshot.snoozedUntil != nil {
+            if title == "Booking updated" {
+                title = "Reminder resumed"
+                supporting = "The snoozed reminder window is active again."
+                tint = BrandPalette.sky
+            }
+            highlights.append("The reminder snooze was cleared on this booking.")
+        }
+    }
+
+    if previousSnapshot.hasOpenIssue == false && currentSnapshot.hasOpenIssue {
+        if title == "Booking updated" {
+            title = "Issue logged"
+            supporting = "This booking now has an open concierge issue on file."
+            tint = BrandPalette.coral
+        }
+        let issueTitle = currentSnapshot.issueTitle ?? "New issue"
+        highlights.append("Open issue logged: \(issueTitle).")
+    }
+
+    if previousSnapshot.hasOpenIssue && currentSnapshot.hasResolvedIssue {
+        if title == "Booking updated" {
+            title = "Issue resolved"
+            supporting = "The provider issue was resolved after your last review action."
+            tint = BrandPalette.teal
+        }
+        let issueTitle = currentSnapshot.issueTitle ?? "Provider issue"
+        highlights.append("\(issueTitle) is now marked resolved.")
+    }
+
+    if previousSnapshot.isQuoteApproved == false && currentSnapshot.isQuoteApproved {
+        if title == "Booking updated" {
+            title = "Quote approved"
+            supporting = "The provider quote is now approved for this booking."
+            tint = BrandPalette.teal
+        }
+        highlights.append("Quote approval is now on file for the current provider.")
+    }
+
+    if previousSnapshot.invoiceUploadedAt == nil && currentSnapshot.invoiceUploadedAt != nil {
+        if title == "Booking updated" {
+            title = "Invoice added"
+            supporting = "A provider invoice landed on this booking."
+            tint = BrandPalette.sky
+        }
+        highlights.append("Invoice uploaded and attached to the active provider record.")
+    }
+
+    if previousSnapshot.paymentConfirmedAt == nil && currentSnapshot.paymentConfirmedAt != nil {
+        if title == "Booking updated" {
+            title = "Payment recorded"
+            supporting = "Payment proof is now attached to this concierge booking."
+            tint = BrandPalette.teal
+        }
+        highlights.append("Payment confirmation is now saved in the archive.")
+    }
+
+    if previousSnapshot.reviewState == .manualReview,
+       currentSnapshot.reviewState == .manualReview,
+       previousSnapshot.manualReviewReason != currentSnapshot.manualReviewReason,
+       let manualReviewReason = currentSnapshot.manualReviewReason {
+        if title == "Booking updated" {
+            title = "Manual review focus changed"
+            supporting = "The reason this row needs manual review shifted after refresh."
+            tint = BrandPalette.gold
+        }
+        highlights.append(manualReviewReason)
+    }
+
+    guard highlights.isEmpty == false else {
+        return nil
+    }
+
+    return ConciergeBatchReviewRowChangeSummary(
+        title: title,
+        supporting: supporting,
+        highlights: Array(highlights.prefix(3)),
+        tint: tint,
+        marksRecoveryReady: marksRecoveryReady
+    )
+}
+
+private func conciergeBatchReviewCompletionGuidance(
+    for entries: [ConciergeBatchReplacementReviewEntry]
+) -> ConciergeBatchReviewCompletionGuidance? {
+    let items = entries.compactMap(conciergeBatchReviewCompletionItem(for:))
+    let safeToCloseItems = items.filter { $0.group == .safeToClose }
+    let needsFinalStepItems = items.filter { $0.group == .needsFinalStep }
+
+    guard safeToCloseItems.isEmpty == false || needsFinalStepItems.isEmpty == false else {
+        return nil
+    }
+
+    let title: String
+    let message: String
+    switch (safeToCloseItems.isEmpty, needsFinalStepItems.isEmpty) {
+    case (false, false):
+        title = "Close what is done, finish what is left"
+        message = "\(safeToCloseItems.count) row\(safeToCloseItems.count == 1 ? "" : "s") are stable enough to close now. \(needsFinalStepItems.count) row\(needsFinalStepItems.count == 1 ? "" : "s") still need one last step before this review is fully wrapped."
+    case (false, true):
+        title = "This review is safe to close"
+        message = "Every remaining row is stable for now, so you can leave the review and come back only if a new provider issue appears."
+    case (true, false):
+        title = "A few rows still need one last step"
+        message = "Keep this review open for the remaining provider threads below so you can finish the final action cleanly."
+    case (true, true):
+        return nil
+    }
+
+    return ConciergeBatchReviewCompletionGuidance(
+        title: title,
+        message: message,
+        safeToCloseItems: safeToCloseItems,
+        needsFinalStepItems: needsFinalStepItems
+    )
+}
+
+private func conciergeBatchReviewRowTitle(
+    for entry: ConciergeBatchReplacementReviewEntry
+) -> String {
+    "\(entry.serviceKind.title) • \(entry.listing.address.suburb)"
+}
+
+private func conciergeBatchReviewEntryReference(
+    for entry: ConciergeBatchReplacementReviewEntry
+) -> ConciergeBatchReviewEntryReference {
+    ConciergeBatchReviewEntryReference(
+        id: entry.id,
+        offerID: entry.offerID,
+        listing: entry.listing,
+        serviceKind: entry.serviceKind,
+        counterpartLabel: entry.counterpartLabel,
+        counterpartName: entry.counterpartName
+    )
+}
+
+private func conciergeBatchReviewCompletionItem(
+    for entry: ConciergeBatchReplacementReviewEntry
+) -> ConciergeBatchReviewCompletionItem? {
+    let rowTitle = "\(entry.serviceKind.title) • \(entry.listing.address.suburb)"
+
+    guard let booking = entry.currentBooking else {
+        return ConciergeBatchReviewCompletionItem(
+            id: entry.id,
+            title: rowTitle,
+            supporting: "This provider row has already cleared from the active archive, so there is nothing left to review here.",
+            symbolName: "checkmark.circle.fill",
+            tint: BrandPalette.teal,
+            group: .safeToClose
+        )
+    }
+
+    if entry.canApplySuggestedReplacement,
+       let suggestedProvider = entry.suggestedReplacement?.provider.name {
+        return ConciergeBatchReviewCompletionItem(
+            id: entry.id,
+            title: rowTitle,
+            supporting: "Apply the ranked backup to switch this booking over to \(suggestedProvider).",
+            symbolName: "arrow.triangle.2.circlepath.circle.fill",
+            tint: BrandPalette.teal,
+            group: .needsFinalStep
+        )
+    }
+
+    if entry.isLoadingSuggestion {
+        return ConciergeBatchReviewCompletionItem(
+            id: entry.id,
+            title: rowTitle,
+            supporting: "Real O Who is still ranking local backups for this provider thread, so keep the review open until the replacement finishes loading.",
+            symbolName: "hourglass.circle.fill",
+            tint: BrandPalette.sky,
+            group: .needsFinalStep
+        )
+    }
+
+    if booking.isProviderConfirmed {
+        return ConciergeBatchReviewCompletionItem(
+            id: entry.id,
+            title: rowTitle,
+            supporting: "The provider is confirmed on this booking, so this row can safely leave the review unless a new issue comes in later.",
+            symbolName: "checkmark.seal.fill",
+            tint: BrandPalette.teal,
+            group: .safeToClose
+        )
+    }
+
+    if let snoozedUntil = booking.reminderSnoozedUntil,
+       snoozedUntil > .now,
+       booking.needsResponseFollowUp == false,
+       booking.hasOpenIssue == false {
+        return ConciergeBatchReviewCompletionItem(
+            id: entry.id,
+            title: rowTitle,
+            supporting: "The reminder is snoozed until \(shortDateString(snoozedUntil)) at \(timeString(snoozedUntil)), so you can close this row until the follow-up window returns.",
+            symbolName: "bell.slash.fill",
+            tint: BrandPalette.gold,
+            group: .safeToClose
+        )
+    }
+
+    switch conciergeAttentionPrimaryAction(for: booking) {
+    case .switchProvider:
+        return ConciergeBatchReviewCompletionItem(
+            id: entry.id,
+            title: rowTitle,
+            supporting: "Open the replacement flow to compare providers and finish resolving this stalled booking.",
+            symbolName: "arrow.triangle.branch",
+            tint: booking.hasOpenIssue ? BrandPalette.coral : BrandPalette.navy,
+            group: .needsFinalStep
+        )
+    case .callProvider:
+        return ConciergeBatchReviewCompletionItem(
+            id: entry.id,
+            title: rowTitle,
+            supporting: "Open the booking and log direct provider follow-up so this overdue reply window is handled before you close the review.",
+            symbolName: "phone.fill",
+            tint: BrandPalette.coral,
+            group: .needsFinalStep
+        )
+    case .reviewBooking:
+        return ConciergeBatchReviewCompletionItem(
+            id: entry.id,
+            title: rowTitle,
+            supporting: "Give this booking one last review to check the saved provider, timing, and reminder state before you leave the queue.",
+            symbolName: "doc.text.magnifyingglass",
+            tint: BrandPalette.navy,
+            group: .needsFinalStep
+        )
+    case .viewBooking:
+        return ConciergeBatchReviewCompletionItem(
+            id: entry.id,
+            title: rowTitle,
+            supporting: "This row is stable enough to close for now. You only need to reopen it if a new provider issue appears.",
+            symbolName: "checkmark.circle.fill",
+            tint: BrandPalette.teal,
+            group: .safeToClose
+        )
+    }
+}
+
+private func conciergeBatchReviewRefreshSummary(
+    hubTitle: String,
+    actionTitle: String,
+    actionMessage: String,
+    previousSelectionCount: Int,
+    refreshedEntries: [ConciergeBatchReplacementReviewEntry],
+    itemTitlesByID: [String: String] = [:],
+    itemReferencesByID: [String: ConciergeBatchReviewEntryReference] = [:],
+    currentStagedEntryIDs: [String] = [],
+    reviewedRefreshHighlightCount: Int = 0,
+    appliedRefreshHighlightCount: Int = 0,
+    reviewedRefreshHighlightIDs: [String] = [],
+    appliedRefreshHighlightIDs: [String] = []
+) -> ConciergeBatchReviewRefreshSummary {
+    let remainingCount = refreshedEntries.count
+    let clearedCount = max(0, previousSelectionCount - remainingCount)
+    let readyCount = refreshedEntries.filter(\.canApplySuggestedReplacement).count
+    let loadingCount = refreshedEntries.filter(\.isLoadingSuggestion).count
+    let manualCount = refreshedEntries.filter {
+        $0.isLoadingSuggestion == false && $0.canApplySuggestedReplacement == false
+    }.count
+
+    var messageParts = [actionMessage]
+    if clearedCount > 0 {
+        messageParts.append("\(clearedCount) review row\(clearedCount == 1 ? "" : "s") cleared.")
+    }
+    if remainingCount > 0 {
+        messageParts.append("\(remainingCount) row\(remainingCount == 1 ? "" : "s") still selected.")
+    }
+    if appliedRefreshHighlightCount > 0 {
+        messageParts.append(
+            "\(appliedRefreshHighlightCount) refreshed row\(appliedRefreshHighlightCount == 1 ? " was" : "s were") consumed by the apply."
+        )
+    }
+    if reviewedRefreshHighlightCount > 0 {
+        messageParts.append(
+            "\(reviewedRefreshHighlightCount) refreshed row\(reviewedRefreshHighlightCount == 1 ? " had" : "s had") already been marked reviewed."
+        )
+    }
+
+    var supportingParts = ["\(hubTitle) selection refreshed."]
+    if readyCount > 0 {
+        supportingParts.append("\(readyCount) ready to switch")
+    }
+    if manualCount > 0 {
+        supportingParts.append("\(manualCount) still need manual review")
+    }
+    if loadingCount > 0 {
+        supportingParts.append("\(loadingCount) checking ranked backups")
+    }
+    if appliedRefreshHighlightCount > 0 {
+        supportingParts.append("\(appliedRefreshHighlightCount) refreshed row\(appliedRefreshHighlightCount == 1 ? "" : "s") applied")
+    }
+    if reviewedRefreshHighlightCount > 0 {
+        supportingParts.append("\(reviewedRefreshHighlightCount) refreshed row\(reviewedRefreshHighlightCount == 1 ? "" : "s") already reviewed")
+    }
+
+    let activeEntryIDs = Set(refreshedEntries.map(\.id))
+    let stagedEntryIDSet = Set(currentStagedEntryIDs)
+
+    let appliedRefreshItems: [ConciergeBatchReviewRefreshOutcomeItem] = appliedRefreshHighlightIDs.compactMap { entryID in
+        guard let title = itemTitlesByID[entryID] else {
+            return nil
+        }
+
+        let action: ConciergeBatchReviewRefreshOutcomeAction?
+        if activeEntryIDs.contains(entryID) {
+            action = ConciergeBatchReviewRefreshOutcomeAction(
+                title: stagedEntryIDSet.contains(entryID) ? "Jump to staged row" : "Jump to review row",
+                kind: .jumpToReviewRow
+            )
+        } else if itemReferencesByID[entryID] != nil {
+            action = ConciergeBatchReviewRefreshOutcomeAction(
+                title: "Open booking",
+                kind: .openBooking
+            )
+        } else {
+            action = nil
+        }
+
+        return ConciergeBatchReviewRefreshOutcomeItem(
+            id: entryID,
+            kind: .applied,
+            title: title,
+            supporting: "This refreshed staged row was included in the apply before the review reopened.",
+            tint: BrandPalette.teal,
+            symbolName: "checkmark.circle.fill",
+            action: action,
+            entryReference: itemReferencesByID[entryID]
+        )
+    }
+
+    let reviewedRefreshItems: [ConciergeBatchReviewRefreshOutcomeItem] = reviewedRefreshHighlightIDs.compactMap { entryID in
+        guard let title = itemTitlesByID[entryID] else {
+            return nil
+        }
+
+        let action: ConciergeBatchReviewRefreshOutcomeAction?
+        if activeEntryIDs.contains(entryID) {
+            action = ConciergeBatchReviewRefreshOutcomeAction(
+                title: stagedEntryIDSet.contains(entryID) ? "Jump to staged row" : "Jump to review row",
+                kind: .jumpToReviewRow
+            )
+        } else if itemReferencesByID[entryID] != nil {
+            action = ConciergeBatchReviewRefreshOutcomeAction(
+                title: "Open booking",
+                kind: .openBooking
+            )
+        } else {
+            action = nil
+        }
+
+        return ConciergeBatchReviewRefreshOutcomeItem(
+            id: entryID,
+            kind: .reviewed,
+            title: title,
+            supporting: "This refreshed staged row had already been cleared as reviewed before the reopen.",
+            tint: BrandPalette.navy,
+            symbolName: "eye.circle.fill",
+            action: action,
+            entryReference: itemReferencesByID[entryID]
+        )
+    }
+
+    return ConciergeBatchReviewRefreshSummary(
+        title: "\(actionTitle) • Review refreshed",
+        message: messageParts.joined(separator: " "),
+        supporting: supportingParts.joined(separator: " • "),
+        appliedRefreshItems: appliedRefreshItems,
+        reviewedRefreshItems: reviewedRefreshItems
+    )
+}
+
+private func conciergeBatchReviewRefreshLaneProgress(
+    selectedID: String,
+    items: [ConciergeBatchReviewRefreshOutcomeItem]
+) -> ConciergeBatchReviewRefreshLaneProgress? {
+    guard let selectedIndex = items.firstIndex(where: { $0.id == selectedID }) else {
+        return nil
+    }
+
+    let selectedItem = items[selectedIndex]
+    let remainingCount = max(0, items.count - 1)
+    let title = items.count == 1
+        ? "Live lane is focused"
+        : "Showing \(selectedIndex + 1) of \(items.count) live rows"
+
+    let message: String
+    if remainingCount == 0 {
+        message = "\(selectedItem.title) is the only live row left in this refresh lane."
+    } else {
+        message = "\(selectedItem.title) is the current live-row jump target. \(remainingCount) more live row\(remainingCount == 1 ? "" : "s") still need attention in this lane."
+    }
+
+    return ConciergeBatchReviewRefreshLaneProgress(
+        lastItemID: selectedID,
+        title: title,
+        message: message,
+        highlightTitle: "Last jumped",
+        nextItemID: items.count > 1 ? items[(selectedIndex + 1) % items.count].id : nil,
+        remainingCount: remainingCount,
+        totalCount: items.count
+    )
+}
+
+private func conciergeBatchReviewBookingLaneProgress(
+    visitedIDs: [String],
+    items: [ConciergeBatchReviewRefreshOutcomeItem]
+) -> ConciergeBatchReviewRefreshLaneProgress? {
+    let uniqueVisitedIDs = Array(Set(visitedIDs))
+    guard items.isEmpty == false,
+          let lastVisitedID = visitedIDs.last,
+          let lastVisitedItem = items.first(where: { $0.id == lastVisitedID }) else {
+        return nil
+    }
+
+    let visitedCount = items.filter { uniqueVisitedIDs.contains($0.id) }.count
+    let remainingItems = items.filter { uniqueVisitedIDs.contains($0.id) == false }
+    let remainingCount = remainingItems.count
+    let nextItem = remainingItems.first
+    let title: String
+    if remainingCount == 0 {
+        title = "Booking lane fully revisited"
+    } else {
+        title = visitedCount == 1
+            ? "1 booking row already revisited"
+            : "\(visitedCount) booking rows already revisited"
+    }
+
+    let message: String
+    if remainingCount == 0 {
+        message = "\(lastVisitedItem.title) was the most recent booking follow-through opened, and every booking row in this lane has now been revisited. The next tap will cycle back through those booking follow-through rows."
+    } else {
+        let nextItemLine = nextItem.map { " Next up: \($0.title)." } ?? ""
+        message = "\(lastVisitedItem.title) was the most recent booking follow-through opened. \(remainingCount) booking row\(remainingCount == 1 ? "" : "s") still need follow-through from this lane.\(nextItemLine)"
+    }
+
+    return ConciergeBatchReviewRefreshLaneProgress(
+        lastItemID: lastVisitedID,
+        title: title,
+        message: message,
+        highlightTitle: "Last opened",
+        nextItemID: nextItem?.id,
+        remainingCount: remainingCount,
+        totalCount: items.count
+    )
+}
+
+private func conciergeBatchReviewRankingUpdateSummary(
+    hubTitle: String,
+    resolvedEntries: [ConciergeBatchReplacementReviewEntry],
+    previousSnapshotsByID: [String: ConciergeBatchReviewRowSnapshot],
+    remainingLoadingCount: Int
+) -> ConciergeBatchReviewRankingUpdateSummary? {
+    guard resolvedEntries.isEmpty == false else {
+        return nil
+    }
+
+    let newlyReadyEntries = resolvedEntries.filter { entry in
+        guard let previousSnapshot = previousSnapshotsByID[entry.id] else {
+            return false
+        }
+        return previousSnapshot.reviewState != .ready && entry.canApplySuggestedReplacement
+    }
+    let manualReviewCount = resolvedEntries.filter {
+        $0.currentBooking != nil &&
+        $0.isLoadingSuggestion == false &&
+        $0.canApplySuggestedReplacement == false
+    }.count
+    let unavailableCount = resolvedEntries.filter { $0.currentBooking == nil }.count
+
+    guard newlyReadyEntries.isEmpty == false || manualReviewCount > 0 || unavailableCount > 0 else {
+        return nil
+    }
+
+    let title: String
+    if newlyReadyEntries.isEmpty == false {
+        title = newlyReadyEntries.count == 1
+            ? "1 backup just became ready"
+            : "\(newlyReadyEntries.count) backups just became ready"
+    } else if manualReviewCount > 0 {
+        title = manualReviewCount == 1
+            ? "1 row still needs manual review"
+            : "\(manualReviewCount) rows still need manual review"
+    } else {
+        title = unavailableCount == 1
+            ? "1 row cleared during ranking"
+            : "\(unavailableCount) rows cleared during ranking"
+    }
+
+    var messageParts = ["Ranking finished for \(resolvedEntries.count) row\(resolvedEntries.count == 1 ? "" : "s")."]
+    if newlyReadyEntries.isEmpty == false {
+        messageParts.append(
+            "\(newlyReadyEntries.count) \(newlyReadyEntries.count == 1 ? "is" : "are") ready to switch right now."
+        )
+    }
+    if manualReviewCount > 0 {
+        messageParts.append(
+            "\(manualReviewCount) \(manualReviewCount == 1 ? "still needs" : "still need") manual review."
+        )
+    }
+    if unavailableCount > 0 {
+        messageParts.append(
+            "\(unavailableCount) \(unavailableCount == 1 ? "cleared" : "cleared") out of the live archive selection."
+        )
+    }
+
+    var supportingParts = ["\(hubTitle) review updated live."]
+    if newlyReadyEntries.isEmpty == false {
+        supportingParts.append("Newly ready rows move to the apply section automatically")
+    }
+    if remainingLoadingCount > 0 {
+        supportingParts.append("\(remainingLoadingCount) more still ranking")
+    } else {
+        supportingParts.append("No remaining ranking checks are running")
+    }
+
+    return ConciergeBatchReviewRankingUpdateSummary(
+        title: title,
+        message: messageParts.joined(separator: " "),
+        supporting: supportingParts.joined(separator: " • "),
+        newlyReadyEntryIDs: newlyReadyEntries.map(\.id)
+    )
+}
+
+private func conciergeBatchReviewStagedNote(
+    for entry: ConciergeBatchReplacementReviewEntry,
+    isApproved: Bool,
+    isInvalidated: Bool,
+    isRefreshHighlighted: Bool
+) -> ConciergeBatchReviewStagedNote? {
+    guard let suggestion = entry.suggestedReplacement,
+          let currentProvider = entry.currentProvider else {
+        return nil
+    }
+
+    let beforeLine: String
+    if let rowChangeSummary = entry.rowChangeSummary {
+        beforeLine = "\(rowChangeSummary.title): \(rowChangeSummary.supporting)"
+    } else if let manualReviewReason = entry.manualReviewReason {
+        beforeLine = manualReviewReason
+    } else {
+        beforeLine = "This booking was still waiting on a safe backup decision before the new ranking result arrived."
+    }
+
+    var whySafe = suggestion.safetySummary.reasons
+    if let firstKeep = suggestion.impactSummary.keeps.first {
+        whySafe.append(firstKeep)
+    }
+
+    return ConciergeBatchReviewStagedNote(
+        id: entry.id,
+        title: "\(entry.serviceKind.title) • \(entry.listing.address.suburb)",
+        serviceSymbolName: entry.serviceKind.symbolName,
+        beforeLine: beforeLine,
+        afterLine: "Now ready to switch from \(currentProvider.name) to \(suggestion.provider.name). \(suggestion.statusLine)",
+        whySafe: Array(whySafe.prefix(3)),
+        tint: suggestion.safetySummary.tint,
+        isApproved: isApproved,
+        isInvalidated: isInvalidated,
+        isRefreshHighlighted: isRefreshHighlighted
+    )
+}
+
+private func conciergeBatchReviewStagedApprovalFingerprint(
+    for entry: ConciergeBatchReplacementReviewEntry
+) -> String? {
+    guard let suggestion = entry.suggestedReplacement,
+          let currentProvider = entry.currentProvider else {
+        return nil
+    }
+
+    return [
+        entry.reviewFingerprint ?? "no-review-fingerprint",
+        currentProvider.id,
+        suggestion.provider.id,
+        String(suggestion.score),
+        suggestion.statusLine
+    ].joined(separator: "|")
+}
+
+private func conciergeBatchReviewInvalidatedStagedEntryIDs(
+    entries: [ConciergeBatchReplacementReviewEntry],
+    stagedEntryIDs: [String],
+    approvalFingerprints: [String: String]
+) -> [String] {
+    let entryByID = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
+    return stagedEntryIDs.filter { entryID in
+        guard let storedFingerprint = approvalFingerprints[entryID],
+              let entry = entryByID[entryID],
+              entry.canApplySuggestedReplacement else {
+            return false
+        }
+
+        return conciergeBatchReviewStagedApprovalFingerprint(for: entry) != storedFingerprint
+    }
+}
+
+private func conciergeBatchReviewStagedRefreshState(
+    previousStagedEntryIDs: [String],
+    previousApprovalFingerprints: [String: String],
+    previousRefreshHighlightedEntryIDs: [String],
+    refreshedEntries: [ConciergeBatchReplacementReviewEntry]
+) -> ConciergeBatchReviewStagedRefreshState {
+    let refreshedEntryByID = Dictionary(uniqueKeysWithValues: refreshedEntries.map { ($0.id, $0) })
+    let survivingStagedEntryIDs = previousStagedEntryIDs.filter { refreshedEntryByID[$0] != nil }
+    let carriedApprovalFingerprints = previousApprovalFingerprints.filter { survivingStagedEntryIDs.contains($0.key) }
+    let invalidatedEntryIDs = survivingStagedEntryIDs.filter { entryID in
+        guard let previousFingerprint = carriedApprovalFingerprints[entryID],
+              let entry = refreshedEntryByID[entryID] else {
+            return false
+        }
+
+        return conciergeBatchReviewStagedApprovalFingerprint(for: entry) != previousFingerprint
+    }
+
+    let carriedForwardApprovalCount = survivingStagedEntryIDs.filter { entryID in
+        guard let previousFingerprint = carriedApprovalFingerprints[entryID],
+              let entry = refreshedEntryByID[entryID] else {
+            return false
+        }
+
+        return conciergeBatchReviewStagedApprovalFingerprint(for: entry) == previousFingerprint
+    }.count
+    let refreshHighlightedEntryIDs = previousRefreshHighlightedEntryIDs.filter { entryID in
+        guard let previousFingerprint = carriedApprovalFingerprints[entryID],
+              let entry = refreshedEntryByID[entryID],
+              invalidatedEntryIDs.contains(entryID) == false else {
+            return false
+        }
+
+        return conciergeBatchReviewStagedApprovalFingerprint(for: entry) == previousFingerprint
+    }
+
+    let pendingDecisionCount = max(
+        0,
+        survivingStagedEntryIDs.count - carriedForwardApprovalCount - invalidatedEntryIDs.count
+    )
+    let immediateReapprovalEntries = invalidatedEntryIDs.compactMap { refreshedEntryByID[$0] }
+        .filter(\.canApplySuggestedReplacement)
+    let blockedInvalidationCount = max(0, invalidatedEntryIDs.count - immediateReapprovalEntries.count)
+
+    let summary: ConciergeBatchReviewApprovalRefreshSummary?
+    if previousStagedEntryIDs.isEmpty {
+        summary = nil
+    } else {
+        let carriedCount = carriedForwardApprovalCount
+        let invalidatedCount = invalidatedEntryIDs.count
+        let title: String
+        if carriedCount > 0 && invalidatedCount > 0 {
+            title = "\(carriedCount) approval\(carriedCount == 1 ? "" : "s") carried forward, \(invalidatedCount) need \(invalidatedCount == 1 ? "a recheck" : "rechecks")"
+        } else if carriedCount > 0 {
+            title = carriedCount == 1
+                ? "1 staged approval carried forward"
+                : "\(carriedCount) staged approvals carried forward"
+        } else if invalidatedCount > 0 {
+            title = invalidatedCount == 1
+                ? "1 staged approval was invalidated"
+                : "\(invalidatedCount) staged approvals were invalidated"
+        } else if pendingDecisionCount > 0 {
+            title = pendingDecisionCount == 1
+                ? "1 staged row is still waiting on a decision"
+                : "\(pendingDecisionCount) staged rows are still waiting on a decision"
+        } else {
+            title = survivingStagedEntryIDs.isEmpty
+                ? "No staged rows are left in this review"
+                : "Staged review state carried across cleanly"
+        }
+
+        var messageParts: [String] = []
+        if carriedCount > 0 {
+            messageParts.append("\(carriedCount) approval\(carriedCount == 1 ? "" : "s") still match the saved switch context.")
+        }
+        if invalidatedCount > 0 {
+            messageParts.append("\(invalidatedCount) approval\(invalidatedCount == 1 ? "" : "s") were cleared because the booking or ranked backup changed.")
+        }
+        if pendingDecisionCount > 0 {
+            messageParts.append("\(pendingDecisionCount) staged row\(pendingDecisionCount == 1 ? " is" : "s are") still pending your decision.")
+        }
+        if survivingStagedEntryIDs.isEmpty {
+            messageParts.append("No staged rows survived in the reopened review.")
+        }
+        let message = messageParts.isEmpty
+            ? "The reopened review kept the same staged provider state without needing any changes."
+            : messageParts.joined(separator: " ")
+
+        var supportingParts: [String] = []
+        if immediateReapprovalEntries.isEmpty == false {
+            supportingParts.append("\(immediateReapprovalEntries.count) can be re-approved right away")
+        }
+        if blockedInvalidationCount > 0 {
+            supportingParts.append("\(blockedInvalidationCount) need a fresh manual check first")
+        }
+        if survivingStagedEntryIDs.isEmpty == false {
+            supportingParts.append("\(survivingStagedEntryIDs.count) staged row\(survivingStagedEntryIDs.count == 1 ? "" : "s") reopened in this review")
+        }
+
+        let immediateReapprovalItems = immediateReapprovalEntries.map { entry in
+            ConciergeBatchReviewApprovalRefreshItem(
+                id: entry.id,
+                title: "\(entry.serviceKind.title) • \(entry.listing.address.suburb)",
+                supporting: {
+                    if let suggestedProvider = entry.suggestedReplacement?.provider.name {
+                        return "Still safe to re-approve now with \(suggestedProvider) as the ranked backup."
+                    }
+
+                    return "Still safe to re-approve now with the current ranked backup."
+                }()
+            )
+        }
+
+        summary = ConciergeBatchReviewApprovalRefreshSummary(
+            title: title,
+            message: message,
+            supporting: supportingParts.joined(separator: " • "),
+            immediateReapprovalItems: Array(immediateReapprovalItems)
+        )
+    }
+
+    return ConciergeBatchReviewStagedRefreshState(
+        stagedEntryIDs: survivingStagedEntryIDs,
+        approvalFingerprints: carriedApprovalFingerprints,
+        refreshHighlightedEntryIDs: refreshHighlightedEntryIDs,
+        invalidatedEntryIDs: invalidatedEntryIDs,
+        summary: summary
+    )
 }
 
 private struct PostSaleConciergeInvoiceUploadContext: Identifiable {
@@ -14725,10 +22039,65 @@ private struct PostSaleConciergeResolutionContext: Identifiable {
     let counterpartName: String
     let booking: PostSaleConciergeBooking
     let mode: PostSaleConciergeResolutionMode
+    let batchReviewReturnContext: ConciergeBatchReviewReturnContext?
+
+    init(
+        offerID: UUID,
+        listing: PropertyListing,
+        serviceKind: PostSaleConciergeServiceKind,
+        counterpartName: String,
+        booking: PostSaleConciergeBooking,
+        mode: PostSaleConciergeResolutionMode,
+        batchReviewReturnContext: ConciergeBatchReviewReturnContext? = nil
+    ) {
+        self.offerID = offerID
+        self.listing = listing
+        self.serviceKind = serviceKind
+        self.counterpartName = counterpartName
+        self.booking = booking
+        self.mode = mode
+        self.batchReviewReturnContext = batchReviewReturnContext
+    }
 
     var id: String {
-        "\(offerID.uuidString)-\(serviceKind.rawValue)-\(mode.title)"
+        "\(offerID.uuidString)-\(serviceKind.rawValue)-\(mode.title)-\(batchReviewReturnContext?.itemIDs.joined(separator: ",") ?? "no-return")"
     }
+}
+
+private struct ConciergeReplacementSuggestion: Identifiable {
+    let provider: PostSaleConciergeProvider
+    let statusLine: String
+    let labels: [String]
+    let score: Int
+    let safetySummary: ConciergeReplacementSafetySummary
+    let impactSummary: ConciergeReplacementImpactSummary
+
+    var id: String {
+        provider.id
+    }
+}
+
+private struct ConciergeReplacementSafetySummary {
+    let score: Int
+    let title: String
+    let summary: String
+    let reasons: [String]
+    let tint: Color
+
+    var scoreText: String {
+        let normalized = min(max(score, 0), 100)
+        return "\(normalized)/100 safer fit"
+    }
+}
+
+private struct ConciergeReplacementImpactSummary {
+    let title: String
+    let supporting: String
+    let keeps: [String]
+    let resets: [String]
+    let archived: [String]
+    let riskReduced: [String]
+    let tint: Color
 }
 
 private struct ArchiveServiceRow: Identifiable {
@@ -15122,6 +22491,7 @@ private func conciergeAttentionRecommendation(
         return ConciergeAttentionRecommendation(
             title: "Resolve the provider issue",
             supporting: "There is already an open issue on this booking. Keep the provider thread moving and close the issue once the blocker is fixed.",
+            primaryActionKind: .switchProvider,
             primaryActionTitle: "Switch provider",
             tint: BrandPalette.coral,
             background: BrandPalette.coral.opacity(0.12),
@@ -15133,6 +22503,7 @@ private func conciergeAttentionRecommendation(
         return ConciergeAttentionRecommendation(
             title: "Escalate this booking",
             supporting: "Multiple follow-ups are already saved. Log an issue or prepare to switch providers if they still do not respond.",
+            primaryActionKind: .switchProvider,
             primaryActionTitle: "Switch provider",
             tint: BrandPalette.coral,
             background: BrandPalette.coral.opacity(0.12),
@@ -15144,6 +22515,7 @@ private func conciergeAttentionRecommendation(
         return ConciergeAttentionRecommendation(
             title: "Call the provider now",
             supporting: "The reply window is already overdue, so direct outreach is the fastest way to unblock settlement handover.",
+            primaryActionKind: .callProvider,
             primaryActionTitle: "Call status",
             tint: BrandPalette.coral,
             background: BrandPalette.coral.opacity(0.12),
@@ -15155,6 +22527,7 @@ private func conciergeAttentionRecommendation(
         return ConciergeAttentionRecommendation(
             title: "Prepare outreach",
             supporting: "The provider reply window closes soon. Call if they do not confirm in time, or keep the reminder live from this queue.",
+            primaryActionKind: .reviewBooking,
             primaryActionTitle: "Review booking",
             tint: BrandPalette.gold,
             background: BrandPalette.gold.opacity(0.18),
@@ -15166,6 +22539,7 @@ private func conciergeAttentionRecommendation(
         return ConciergeAttentionRecommendation(
             title: "Provider already confirmed",
             supporting: "This booking has a saved confirmation. Use the queue to monitor the next handover step or any new issue.",
+            primaryActionKind: .viewBooking,
             primaryActionTitle: "View booking",
             tint: BrandPalette.teal,
             background: BrandPalette.teal.opacity(0.14),
@@ -15176,10 +22550,651 @@ private func conciergeAttentionRecommendation(
     return ConciergeAttentionRecommendation(
         title: "Review the booking details",
         supporting: "Open the booking to check the saved schedule, provider details, and next action before the reminder escalates further.",
+        primaryActionKind: .reviewBooking,
         primaryActionTitle: "Review booking",
         tint: BrandPalette.navy,
         background: BrandPalette.navy.opacity(0.10),
         symbolName: "doc.text.magnifyingglass"
+    )
+}
+
+private func conciergeAttentionPrimaryAction(
+    for booking: PostSaleConciergeBooking
+) -> ConciergeAttentionPrimaryActionKind {
+    conciergeAttentionRecommendation(for: booking).primaryActionKind
+}
+
+private func conciergeReplacementPreviewFingerprint(
+    for booking: PostSaleConciergeBooking,
+    strategy: ConciergeReplacementStrategy
+) -> String {
+    [
+        strategy.rawValue,
+        booking.provider.id,
+        booking.status.rawValue,
+        booking.issueKind?.rawValue ?? "none",
+        booking.issueLoggedAt.map { String($0.timeIntervalSince1970) } ?? "no-issue-date",
+        booking.issueResolvedAt.map { String($0.timeIntervalSince1970) } ?? "no-resolution-date",
+        booking.lastFollowUpAt.map { String($0.timeIntervalSince1970) } ?? "no-follow-up",
+        String(booking.followUpCountValue),
+        booking.lastRescheduledAt.map { String($0.timeIntervalSince1970) } ?? "no-reschedule",
+        booking.providerConfirmedAt.map { String($0.timeIntervalSince1970) } ?? "no-confirmation"
+    ].joined(separator: "|")
+}
+
+private func conciergeResolvedReplacementWeighting(
+    for currentBooking: PostSaleConciergeBooking,
+    strategy: ConciergeReplacementStrategy
+) -> ConciergeReplacementWeighting {
+    switch strategy {
+    case .smart:
+        if currentBooking.hasOpenIssue {
+            switch currentBooking.issueKind {
+            case .providerNoShow, .schedulingProblem:
+                return .fastestRecovery
+            case .serviceQuality:
+                return .qualityFirst
+            case .billingProblem:
+                return .bestValue
+            case .accessProblem, .other, .none:
+                return .balanced
+            }
+        }
+
+        if currentBooking.followUpCountValue >= 2 || currentBooking.needsResponseFollowUp {
+            return .fastestRecovery
+        }
+
+        return .balanced
+    case .fastestRecovery:
+        return .fastestRecovery
+    case .qualityFirst:
+        return .qualityFirst
+    case .bestValue:
+        return .bestValue
+    }
+}
+
+private func conciergeReplacementStrategySupportingLine(
+    strategy: ConciergeReplacementStrategy,
+    currentBooking: PostSaleConciergeBooking
+) -> String {
+    let resolvedWeighting = conciergeResolvedReplacementWeighting(
+        for: currentBooking,
+        strategy: strategy
+    )
+
+    switch strategy {
+    case .smart:
+        switch resolvedWeighting {
+        case .fastestRecovery:
+            return "Smart mode is prioritising faster replies and direct outreach because this booking is stalled or overdue."
+        case .qualityFirst:
+            return "Smart mode is prioritising stronger reviews and steadier service quality because the current provider issue points to quality risk."
+        case .bestValue:
+            return "Smart mode is prioritising lower starting guides because the current provider issue points to billing risk."
+        case .balanced:
+            return "Smart mode is using a balanced score across response time, review strength, suburb fit, and value."
+        }
+    case .fastestRecovery:
+        return "Speed priority moves faster responders and easier-to-reach backups to the top."
+    case .qualityFirst:
+        return "Quality priority moves stronger-rated providers with better review depth to the top."
+    case .bestValue:
+        return "Value priority moves lower starting guides up without ignoring response speed or local quality."
+    }
+}
+
+private func conciergeReplacementRankingScore(
+    for provider: PostSaleConciergeProvider,
+    currentBooking: PostSaleConciergeBooking,
+    listing: PropertyListing,
+    strategy: ConciergeReplacementStrategy = .smart
+) -> Int {
+    let weighting = conciergeResolvedReplacementWeighting(
+        for: currentBooking,
+        strategy: strategy
+    )
+    let directContactCount = [provider.phoneNumber, provider.websiteURL?.absoluteString, provider.mapsURL?.absoluteString]
+        .compactMap { $0 }
+        .count
+    let sameSuburb = provider.suburb.caseInsensitiveCompare(listing.address.suburb) == .orderedSame
+
+    var score = 24
+
+    let ratingComponent = provider.rating.map { Int(($0 * 8).rounded()) } ?? 12
+    let reviewComponent = min((provider.reviewCount ?? 0) / 10, 8)
+    let responseComponent = max(0, 18 - min(provider.estimatedResponseHours ?? 18, 18))
+    let contactComponent = min(directContactCount * 2, 6)
+    let suburbComponent = sameSuburb ? 4 : 0
+
+    if let indicativeLow = provider.indicativePriceLow {
+        let valueBase = max(0, 16 - min(indicativeLow / 100, 16))
+        score += valueBase
+    } else {
+        score += 4
+    }
+
+    switch weighting {
+    case .balanced:
+        score += ratingComponent + reviewComponent + responseComponent + contactComponent + suburbComponent
+    case .fastestRecovery:
+        score += ratingComponent / 2 + reviewComponent / 2 + (responseComponent * 2) + contactComponent + suburbComponent
+    case .qualityFirst:
+        score += (ratingComponent * 2) + reviewComponent + responseComponent / 2 + contactComponent / 2 + suburbComponent
+    case .bestValue:
+        score += ratingComponent / 2 + reviewComponent / 2 + responseComponent + contactComponent / 2 + suburbComponent
+    }
+
+    if let currentResponse = currentBooking.provider.estimatedResponseHours,
+       let candidateResponse = provider.estimatedResponseHours,
+       candidateResponse < currentResponse {
+        let delta = currentResponse - candidateResponse
+        score += weighting == .fastestRecovery ? min(delta * 3, 18) : min(delta * 2, 12)
+    }
+
+    if let currentRating = currentBooking.provider.rating,
+       let candidateRating = provider.rating,
+       candidateRating > currentRating {
+        let deltaScore = Int(((candidateRating - currentRating) * 10).rounded())
+        score += weighting == .qualityFirst ? deltaScore * 2 : deltaScore
+    }
+
+    if let candidateLow = provider.indicativePriceLow,
+       let currentLow = currentBooking.provider.indicativePriceLow,
+       candidateLow < currentLow {
+        let delta = min((currentLow - candidateLow) / 100, weighting == .bestValue ? 14 : 8)
+        score += delta
+    }
+
+    if currentBooking.hasOpenIssue {
+        switch currentBooking.issueKind {
+        case .providerNoShow, .schedulingProblem:
+            score += max(0, 18 - (provider.estimatedResponseHours ?? 12))
+        case .serviceQuality:
+            score += Int(((provider.rating ?? 4.0) * 4).rounded())
+        case .billingProblem:
+            if let price = provider.indicativePriceLow {
+                score += max(0, 12 - min(price / 100, 12))
+            }
+        case .accessProblem, .other, .none:
+            score += sameSuburb ? 6 : 3
+        }
+    } else if currentBooking.followUpCountValue >= 2 || currentBooking.needsResponseFollowUp {
+        score += max(0, 18 - (provider.estimatedResponseHours ?? 12))
+    }
+
+    return score
+}
+
+private func rankedConciergeReplacementProviders(
+    for currentBooking: PostSaleConciergeBooking,
+    listing: PropertyListing,
+    candidates: [PostSaleConciergeProvider],
+    strategy: ConciergeReplacementStrategy = .smart
+) -> [PostSaleConciergeProvider] {
+    candidates
+        .filter { $0.id != currentBooking.provider.id }
+        .sorted { left, right in
+            let leftScore = conciergeReplacementRankingScore(
+                for: left,
+                currentBooking: currentBooking,
+                listing: listing,
+                strategy: strategy
+            )
+            let rightScore = conciergeReplacementRankingScore(
+                for: right,
+                currentBooking: currentBooking,
+                listing: listing,
+                strategy: strategy
+            )
+
+            if leftScore == rightScore {
+                if left.rating == right.rating {
+                    return (left.estimatedResponseHours ?? .max) < (right.estimatedResponseHours ?? .max)
+                }
+                return (left.rating ?? 0) > (right.rating ?? 0)
+            }
+
+            return leftScore > rightScore
+        }
+}
+
+private func bestConciergeReplacementProvider(
+    for currentBooking: PostSaleConciergeBooking,
+    listing: PropertyListing,
+    candidates: [PostSaleConciergeProvider],
+    strategy: ConciergeReplacementStrategy = .smart
+) -> PostSaleConciergeProvider? {
+    rankedConciergeReplacementProviders(
+        for: currentBooking,
+        listing: listing,
+        candidates: candidates,
+        strategy: strategy
+    ).first
+}
+
+private func conciergeReplacementStatusLine(
+    for provider: PostSaleConciergeProvider,
+    currentBooking: PostSaleConciergeBooking,
+    score: Int,
+    strategy: ConciergeReplacementStrategy = .smart
+) -> String {
+    let weighting = conciergeResolvedReplacementWeighting(
+        for: currentBooking,
+        strategy: strategy
+    )
+
+    switch weighting {
+    case .fastestRecovery:
+        return currentBooking.hasOpenIssue ? "Fast recovery option" : "Speed-first backup"
+    case .qualityFirst:
+        return currentBooking.hasOpenIssue ? "Quality-first replacement" : "Quality-first backup"
+    case .bestValue:
+        return currentBooking.hasOpenIssue ? "Value-focused replacement" : "Value-first backup"
+    case .balanced:
+        break
+    }
+
+    if currentBooking.hasOpenIssue {
+        if let issueKind = currentBooking.issueKind {
+            switch issueKind {
+            case .providerNoShow, .schedulingProblem:
+                return "Fast recovery option"
+            case .serviceQuality:
+                return "Quality-first replacement"
+            case .billingProblem:
+                return "Value-focused replacement"
+            case .accessProblem, .other:
+                break
+            }
+        }
+        return "Issue-ready backup"
+    }
+
+    if currentBooking.followUpCountValue >= 2 || currentBooking.needsResponseFollowUp {
+        return score >= 85 ? "Best replacement match" : "Responsive backup"
+    }
+
+    return score >= 85 ? "Best replacement match" : "Strong local backup"
+}
+
+private func conciergeReplacementLabels(
+    for provider: PostSaleConciergeProvider,
+    currentBooking: PostSaleConciergeBooking,
+    rankedCandidates: [PostSaleConciergeProvider],
+    strategy: ConciergeReplacementStrategy = .smart
+) -> [String] {
+    var labels: [String] = []
+
+    if let lowestPrice = rankedCandidates.compactMap(\.indicativePriceLow).min(),
+       provider.indicativePriceLow == lowestPrice {
+        labels.append("Best value")
+    }
+
+    if let topRating = rankedCandidates.compactMap(\.rating).max(),
+       provider.rating == topRating {
+        labels.append("Top rated")
+    }
+
+    if let fastestReply = rankedCandidates.compactMap(\.estimatedResponseHours).min(),
+       provider.estimatedResponseHours == fastestReply {
+        labels.append("Fastest reply")
+    }
+
+    if let currentResponse = currentBooking.provider.estimatedResponseHours,
+       let candidateResponse = provider.estimatedResponseHours,
+       candidateResponse < currentResponse {
+        labels.append("Faster reply")
+    }
+
+    if let currentRating = currentBooking.provider.rating,
+       let candidateRating = provider.rating,
+       candidateRating > currentRating {
+        labels.append("Higher rated")
+    }
+
+    if let candidateLow = provider.indicativePriceLow,
+       let currentLow = currentBooking.provider.indicativePriceLow,
+       candidateLow < currentLow {
+        labels.append("Better value")
+    }
+
+    if currentBooking.hasOpenIssue {
+        labels.append("Issue-ready")
+    } else if currentBooking.followUpCountValue >= 2 || currentBooking.needsResponseFollowUp {
+        labels.append("Recovery pick")
+    }
+
+    switch conciergeResolvedReplacementWeighting(for: currentBooking, strategy: strategy) {
+    case .fastestRecovery:
+        labels.append("Speed priority")
+    case .qualityFirst:
+        labels.append("Quality priority")
+    case .bestValue:
+        labels.append("Value priority")
+    case .balanced:
+        break
+    }
+
+    var seen = Set<String>()
+    return labels.filter { seen.insert($0).inserted }
+}
+
+private func conciergeReplacementSuggestion(
+    for provider: PostSaleConciergeProvider,
+    currentBooking: PostSaleConciergeBooking,
+    listing: PropertyListing,
+    rankedCandidates: [PostSaleConciergeProvider],
+    strategy: ConciergeReplacementStrategy = .smart
+) -> ConciergeReplacementSuggestion {
+    let score = conciergeReplacementRankingScore(
+        for: provider,
+        currentBooking: currentBooking,
+        listing: listing,
+        strategy: strategy
+    )
+    let safetySummary = conciergeReplacementSafetySummary(
+        for: provider,
+        currentBooking: currentBooking,
+        listing: listing,
+        score: score,
+        strategy: strategy
+    )
+
+    return ConciergeReplacementSuggestion(
+        provider: provider,
+        statusLine: conciergeReplacementStatusLine(
+            for: provider,
+            currentBooking: currentBooking,
+            score: score,
+            strategy: strategy
+        ),
+        labels: conciergeReplacementLabels(
+            for: provider,
+            currentBooking: currentBooking,
+            rankedCandidates: rankedCandidates,
+            strategy: strategy
+        ),
+        score: score,
+        safetySummary: safetySummary,
+        impactSummary: conciergeReplacementImpactSummary(
+            for: provider,
+            currentBooking: currentBooking,
+            listing: listing,
+            scheduledFor: currentBooking.scheduledFor,
+            notes: currentBooking.notes,
+            estimatedCost: currentBooking.estimatedCost,
+            safetySummary: safetySummary
+        )
+    )
+}
+
+private func conciergeReplacementSafetySummary(
+    for provider: PostSaleConciergeProvider,
+    currentBooking: PostSaleConciergeBooking,
+    listing: PropertyListing,
+    score: Int,
+    strategy: ConciergeReplacementStrategy = .smart
+) -> ConciergeReplacementSafetySummary {
+    let normalizedScore = min(max(score, 0), 100)
+    let weighting = conciergeResolvedReplacementWeighting(
+        for: currentBooking,
+        strategy: strategy
+    )
+    let title: String
+    let tint: Color
+
+    switch normalizedScore {
+    case 92...:
+        title = "High-confidence backup"
+        tint = BrandPalette.teal
+    case 82...:
+        title = "Safer backup"
+        tint = BrandPalette.navy
+    default:
+        title = "Recovery option"
+        tint = BrandPalette.gold
+    }
+
+    let summary: String
+    switch weighting {
+    case .fastestRecovery:
+        summary = currentBooking.hasOpenIssue || currentBooking.needsResponseFollowUp || currentBooking.followUpCountValue >= 2
+            ? "Prioritised to recover the booking quickly after the current provider stalled."
+            : "Prioritised for the fastest recovery path if the current booking slips."
+    case .qualityFirst:
+        summary = "Prioritised to lower the risk of another service quality problem during handover."
+    case .bestValue:
+        summary = "Prioritised to reduce pricing surprises while keeping the service moving."
+    case .balanced:
+        if currentBooking.hasOpenIssue {
+            summary = "Prioritised as the safest recovery option for the open provider issue."
+        } else if currentBooking.followUpCountValue >= 2 || currentBooking.needsResponseFollowUp {
+            summary = "Prioritised to get the handover moving again after repeated follow-ups."
+        } else {
+            summary = "Prioritised as the safest local fallback if the current booking slips again."
+        }
+    }
+
+    let fasterReason: String? = {
+        guard let currentResponse = currentBooking.provider.estimatedResponseHours,
+              let candidateResponse = provider.estimatedResponseHours,
+              candidateResponse < currentResponse else {
+            return nil
+        }
+        let delta = currentResponse - candidateResponse
+        return "Estimated to reply \(delta) hour\(delta == 1 ? "" : "s") faster than the current provider."
+    }()
+
+    let qualityReason: String? = {
+        guard let currentRating = currentBooking.provider.rating,
+              let candidateRating = provider.rating,
+              candidateRating > currentRating else {
+            return nil
+        }
+        let delta = (candidateRating - currentRating).formatted(.number.precision(.fractionLength(1)))
+        return "\(delta)-star stronger local rating helps reduce repeat service risk."
+    }()
+
+    let valueReason: String? = {
+        guard let candidateLow = provider.indicativePriceLow,
+              let currentLow = currentBooking.provider.indicativePriceLow,
+              candidateLow < currentLow else {
+            return nil
+        }
+        return "Starts \(currencyString(currentLow - candidateLow)) lower than the current provider guide."
+    }()
+
+    let suburbReason: String? = provider.suburb.caseInsensitiveCompare(listing.address.suburb) == .orderedSame
+        ? "Already covers the listing suburb, which helps keep access and timing simple."
+        : nil
+
+    let directContactCount = [provider.phoneNumber, provider.websiteURL?.absoluteString, provider.mapsURL?.absoluteString]
+        .compactMap { $0 }
+        .count
+    let contactReason: String? = directContactCount >= 2
+        ? "Has direct contact and location links ready if you need to escalate quickly."
+        : nil
+
+    let orderedReasons: [String?]
+    switch weighting {
+    case .fastestRecovery:
+        orderedReasons = [fasterReason, contactReason, suburbReason, qualityReason, valueReason]
+    case .qualityFirst:
+        orderedReasons = [qualityReason, suburbReason, fasterReason, contactReason, valueReason]
+    case .bestValue:
+        orderedReasons = [valueReason, fasterReason, qualityReason, suburbReason, contactReason]
+    case .balanced:
+        orderedReasons = [fasterReason, qualityReason, valueReason, suburbReason, contactReason]
+    }
+
+    var reasons = orderedReasons.compactMap { $0 }
+
+    if reasons.isEmpty {
+        reasons.append("Keeps a comparable local provider ready without losing the current booking audit trail.")
+    }
+
+    return ConciergeReplacementSafetySummary(
+        score: normalizedScore,
+        title: title,
+        summary: summary,
+        reasons: Array(reasons.prefix(3)),
+        tint: tint
+    )
+}
+
+private func conciergeReplacementImpactSummary(
+    for provider: PostSaleConciergeProvider,
+    currentBooking: PostSaleConciergeBooking,
+    listing: PropertyListing,
+    scheduledFor: Date,
+    notes: String,
+    estimatedCost: Int?,
+    safetySummary: ConciergeReplacementSafetySummary?
+) -> ConciergeReplacementImpactSummary {
+    let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+    let isSameProvider = provider.id == currentBooking.provider.id
+    let scheduleChanged = currentBooking.scheduledFor != scheduledFor
+    let estimateChanged = currentBooking.estimatedCost != estimatedCost
+    let hasReminderState = currentBooking.followUpCountValue > 0 ||
+        currentBooking.isReminderSnoozed ||
+        currentBooking.needsResponseFollowUp ||
+        currentBooking.isResponseDueSoon
+    let hasFinancialState = currentBooking.estimatedCost != nil ||
+        currentBooking.isQuoteApproved ||
+        currentBooking.invoiceAmount != nil ||
+        currentBooking.hasInvoiceAttachment ||
+        currentBooking.paidAmount != nil ||
+        currentBooking.hasPaymentProof ||
+        currentBooking.isPaid ||
+        currentBooking.refundAmount != nil ||
+        currentBooking.isRefunded
+    let hasIssueState = currentBooking.hasOpenIssue || currentBooking.hasResolvedIssue
+
+    var keeps: [String] = []
+    var resets: [String] = []
+    var archived: [String] = []
+    var riskReduced: [String] = []
+    let title: String
+    let supporting: String
+    let tint: Color
+
+    if isSameProvider {
+        title = "Keep \(provider.name)"
+        supporting = "Shows what stays attached if you keep the current provider and adjust the booking details."
+        tint = BrandPalette.navy
+
+        keeps.append("The booking stays attached to the same sale archive and counterpart handover.")
+
+        if trimmedNotes.isEmpty == false {
+            keeps.append("Booking notes stay on the active provider record.")
+        }
+
+        if currentBooking.isQuoteApproved && estimateChanged == false {
+            keeps.append("Quote approval stays attached because the estimate still matches.")
+        }
+
+        if currentBooking.isProviderConfirmed && scheduleChanged == false {
+            keeps.append("Provider confirmation stays attached because the time is unchanged.")
+        }
+
+        if hasReminderState && scheduleChanged == false {
+            keeps.append("Follow-up history and reminder state stay on the active booking.")
+        }
+
+        if hasFinancialState {
+            keeps.append("Saved invoices, payment proof, and receipts stay on the active provider record.")
+        }
+
+        if currentBooking.hasProviderHistory {
+            archived.append("\(currentBooking.providerHistoryCountValue) previous provider record\(currentBooking.providerHistoryCountValue == 1 ? "" : "s") stay archived in the closeout pack.")
+        }
+
+        if estimateChanged && currentBooking.isQuoteApproved {
+            resets.append("Changing the estimate clears quote approval until the provider re-confirms pricing.")
+        }
+
+        if scheduleChanged {
+            resets.append("Changing the service time starts a fresh provider reply window.")
+
+            if currentBooking.isProviderConfirmed || currentBooking.providerConfirmationNote != nil {
+                resets.append("Provider confirmation and confirmation notes clear when the time changes.")
+            }
+
+            if hasReminderState {
+                resets.append("Follow-up counts, reply timers, and reminder snoozes reset when the time changes.")
+            }
+        }
+    } else {
+        title = "Switch impact preview"
+        supporting = "Shows what carries into the new booking, what stays archived on the outgoing provider, and what restarts."
+        tint = safetySummary?.tint ?? BrandPalette.teal
+
+        keeps.append("The \(provider.serviceKind.title.lowercased()) service stays attached to the same \(listing.address.suburb) sale archive.")
+        keeps.append("The new booking opens for \(shortDateString(scheduledFor)) at \(timeString(scheduledFor)).")
+
+        if trimmedNotes.isEmpty == false {
+            keeps.append("Booking notes move across to the replacement unless you change them.")
+        }
+
+        if let estimatedCost {
+            keeps.append("Quote estimate \(currencyString(estimatedCost)) becomes the new starting quote summary.")
+        }
+
+        archived.append("The outgoing provider record is preserved with the replacement timestamp in archive history.")
+
+        if hasReminderState {
+            archived.append("Saved follow-ups, reply reminders, and snooze history stay attached to the outgoing provider record.")
+        }
+
+        if hasIssueState {
+            archived.append("The current provider issue trail stays on file instead of moving onto the replacement.")
+        }
+
+        if hasFinancialState {
+            archived.append("Quotes, invoices, payment proof, refunds, and receipts stay attached to the outgoing provider record.")
+        }
+
+        if currentBooking.hasProviderHistory {
+            archived.append("Earlier provider replacements remain visible in the audit trail.")
+        }
+
+        resets.append("The replacement starts as a fresh scheduled booking for the new provider.")
+
+        if hasFinancialState {
+            resets.append("The new provider starts without quote approval, invoice, payment, or refund status on file.")
+        }
+
+        if currentBooking.isProviderConfirmed || currentBooking.providerConfirmationNote != nil {
+            resets.append("Provider confirmation and confirmation notes need to be collected again.")
+        }
+
+        if hasReminderState {
+            resets.append("Reply timers, follow-up counts, and reminder snoozes restart for the new provider.")
+        }
+
+        if hasIssueState {
+            resets.append("The replacement opens without the old provider issue attached as active state.")
+        }
+
+        if let safetySummary {
+            riskReduced = safetySummary.reasons
+        }
+    }
+
+    if keeps.isEmpty {
+        keeps.append("The booking remains linked to the same sale archive and closeout export.")
+    }
+
+    return ConciergeReplacementImpactSummary(
+        title: title,
+        supporting: supporting,
+        keeps: Array(keeps.prefix(4)),
+        resets: Array(resets.prefix(4)),
+        archived: Array(archived.prefix(4)),
+        riskReduced: Array(riskReduced.prefix(3)),
+        tint: tint
     )
 }
 
@@ -15260,6 +23275,19 @@ private func conciergeProviderPriceGuide(_ provider: PostSaleConciergeProvider) 
     }
 }
 
+private func conciergeProviderRatingLine(_ provider: PostSaleConciergeProvider) -> String? {
+    if let rating = provider.rating {
+        let reviewLine = provider.reviewCount.map { " • \($0) reviews" } ?? ""
+        return "\(rating.formatted(.number.precision(.fractionLength(1)))) stars\(reviewLine)"
+    }
+
+    if let reviewCount = provider.reviewCount {
+        return "\(reviewCount) local reviews"
+    }
+
+    return nil
+}
+
 private func conciergeProviderResponseLine(_ provider: PostSaleConciergeProvider) -> String? {
     guard let hours = provider.estimatedResponseHours else {
         return nil
@@ -15275,6 +23303,57 @@ private func conciergeProviderResponseLine(_ provider: PostSaleConciergeProvider
         let days = max(1, hours / 24)
         return "Reply in about \(days) day\(days == 1 ? "" : "s")"
     }
+}
+
+private func conciergeReplacementComparisonLines(
+    currentProvider: PostSaleConciergeProvider,
+    suggestedProvider: PostSaleConciergeProvider
+) -> [String] {
+    var lines: [String] = []
+
+    if let currentResponse = currentProvider.estimatedResponseHours,
+       let suggestedResponse = suggestedProvider.estimatedResponseHours,
+       suggestedResponse != currentResponse {
+        let delta = abs(currentResponse - suggestedResponse)
+        if suggestedResponse < currentResponse {
+            lines.append("\(delta)-hour faster reply estimate than the current provider.")
+        } else {
+            lines.append("\(delta)-hour slower reply estimate, but may still be the better recovery fit.")
+        }
+    }
+
+    if let currentRating = currentProvider.rating,
+       let suggestedRating = suggestedProvider.rating,
+       suggestedRating != currentRating {
+        let delta = abs(suggestedRating - currentRating)
+        let formatted = delta.formatted(.number.precision(.fractionLength(1)))
+        if suggestedRating > currentRating {
+            lines.append("\(formatted)-star stronger local rating.")
+        } else {
+            lines.append("\(formatted)-star lower rating, but selected for recovery speed or value.")
+        }
+    }
+
+    if let currentLow = currentProvider.indicativePriceLow,
+       let suggestedLow = suggestedProvider.indicativePriceLow,
+       suggestedLow != currentLow {
+        let delta = abs(currentLow - suggestedLow)
+        if suggestedLow < currentLow {
+            lines.append("\(currencyString(delta)) lower starting guide.")
+        } else {
+            lines.append("\(currencyString(delta)) higher starting guide for the recommended backup.")
+        }
+    }
+
+    if currentProvider.suburb.caseInsensitiveCompare(suggestedProvider.suburb) != .orderedSame {
+        lines.append("Covers a different local area: \(suggestedProvider.suburb).")
+    }
+
+    if lines.isEmpty {
+        lines.append("Keeps a comparable local option ready if the current provider stays blocked.")
+    }
+
+    return Array(lines.prefix(3))
 }
 
 private struct PrivateSaleEconomics {
