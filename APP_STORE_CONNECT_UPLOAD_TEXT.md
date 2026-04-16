@@ -13,14 +13,17 @@ Use this file as the source of truth for submission text and review metadata.
   - Contact Name: `Aaron Roper`
   - Contact Email: `aroper8@hotmail.com`
   - Review Notes: 
-    - Sign in is optional for first launch, but account create/sign-in is available for your own profile.
-    - Start with the local profile and continue into core flows from `Browse`, `Messages`, `Sell`, and `Legal workspace`.
+    - No sign-in is required for review. The app opens straight into a working local demo profile.
+    - To test buyer features, use the default buyer demo profile on launch.
+    - To test seller features, open `Account` and use `App Review access > Seller demo`, or open `Sell` and tap `Switch to seller demo`.
+    - Use `Account > App Review access > Buyer demo` to switch back.
 
 ## URLs
 
 - Privacy Policy URL: `https://roper8883.github.io/Real-O-Who/real-o-who/privacy-policy/`
 - Terms URL: `https://roper8883.github.io/Real-O-Who/real-o-who/terms-of-use/`
 - Support URL: `https://roper8883.github.io/Real-O-Who/real-o-who/support/`
+- Important: use `Real-O-Who` in the URL. Do not use the older `Real-A-Who` support URL.
 - Marketing Website: `https://roper8883.github.io/Real-O-Who/real-o-who/`
 
 ## App Description (full)
@@ -50,13 +53,12 @@ Data can operate with remote sync when the local backend is available, and all c
 
 ## App Review Test Steps (copy/paste)
 
-1. Open app.
-2. Tap `Start now`.
-3. Browse featured/private listings and open a listing detail.
-4. Go to `Messages` and confirm secure conversation controls.
-5. Go to a listing and submit an offer, then open the workspace.
-6. Select a legal representative for buyer/seller flow and send invite code-based legal invite.
-7. In `Account`, confirm support, privacy, terms, and delete account actions.
+1. Open app. No sign-in is required.
+2. Review buyer flows from `Browse`, `Saved`, and `Messages`.
+3. Open `Account` and confirm support, privacy, terms, and delete account actions.
+4. In `Account`, use `App Review access > Seller demo`.
+5. Open `Sell` and review listing management, repricing, offers, legal handoff, contract, settlement, and concierge follow-through.
+6. Switch back from `Account > App Review access > Buyer demo` if needed.
 
 ## Support Text Fields
 

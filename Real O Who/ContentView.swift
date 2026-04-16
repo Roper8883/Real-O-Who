@@ -3942,7 +3942,7 @@ private struct SellView: View {
                     )
 
                     if store.currentUser.role != .seller {
-                        EmptyPanel(message: "Switch to a seller profile in Account to create and manage private listings.")
+                        sellerAccessCard
                     } else {
                         sellerStats
                         ownerInsights
@@ -4186,6 +4186,55 @@ private struct SellView: View {
                 )
             }
         }
+    }
+
+    private var sellerAccessCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Seller access required")
+                .font(.headline)
+
+            Text("Seller Hub is only available when the built-in seller demo profile is active. Switch now to review listing management, repricing, offers, legal handoff, contracts, settlement, and concierge follow-through.")
+                .foregroundStyle(.secondary)
+
+            if let seller = preferredSellerDemoProfile {
+                Button {
+                    store.setCurrentUser(seller.id)
+                } label: {
+                    PersonaCard(user: seller, isSelected: seller.id == store.currentUserID)
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack(spacing: 10) {
+                Button("Open Account access") {
+                    selectedTab = .account
+                }
+                .buttonStyle(.bordered)
+
+                if let seller = preferredSellerDemoProfile,
+                   seller.id != store.currentUserID {
+                    Button("Switch to seller demo") {
+                        store.setCurrentUser(seller.id)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(BrandPalette.teal)
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(BrandPalette.card)
+        )
+    }
+
+    private var preferredSellerDemoProfile: UserProfile? {
+        if store.currentUser.role == .seller {
+            return store.currentUser
+        }
+
+        return store.sellers.first
     }
 
     private var sellerNegotiationEntries: [SellerOfferBoardEntry] {
@@ -7840,6 +7889,7 @@ private struct AccountView: View {
                         )
                     }
                     currentAccountCard
+                    reviewAccessCard
                     reminderControlCard
                     replacementStrategyControlCard
                     verificationCenterCard
@@ -7962,6 +8012,48 @@ private struct AccountView: View {
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(BrandPalette.teal)
             }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(BrandPalette.card)
+        )
+    }
+
+    private var reviewAccessCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("App Review access")
+                .font(.headline)
+
+            Text("Switch between the built-in buyer and seller demo profiles here. No username or password is required to review both account types.")
+                .foregroundStyle(.secondary)
+
+            if let buyer = preferredDemoProfile(for: .buyer) {
+                Button {
+                    switchToDemoProfile(buyer)
+                } label: {
+                    PersonaCard(user: buyer, isSelected: buyer.id == store.currentUserID)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if let seller = preferredDemoProfile(for: .seller) {
+                Button {
+                    switchToDemoProfile(seller)
+                } label: {
+                    PersonaCard(user: seller, isSelected: seller.id == store.currentUserID)
+                }
+                .buttonStyle(.plain)
+            }
+
+            HighlightInformationCard(
+                title: store.currentUser.role == .seller ? "Seller demo is active" : "Buyer demo is active",
+                message: store.currentUser.role == .seller
+                    ? "Open Sell to review listing management, offer ranking, repricing, legal handoff, contract execution, settlement, and concierge follow-through."
+                    : "Open Browse, Saved, and Messages for buyer flows, or tap the seller demo above to unlock Seller Hub immediately.",
+                supporting: "This switch changes the in-app demo profile only and does not require a separate sign-in session."
+            )
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -8232,7 +8324,7 @@ private struct AccountView: View {
                 )
                 FeatureTile(
                     title: "Sell privately",
-                    subtitle: "Use Sell to review listing management, offers, contract signing, and legal handoff workflows."
+                    subtitle: "Use Sell to review listing management, offers, contract signing, and legal handoff workflows. If seller mode is not active, switch profiles in App Review access above."
                 )
             }
         }
@@ -8326,6 +8418,27 @@ private struct AccountView: View {
         } catch {
             verificationNotice = ListingNotice(message: "Could not prepare that verification PDF right now.")
         }
+    }
+
+    private func preferredDemoProfile(for role: UserRole) -> UserProfile? {
+        if store.currentUser.role == role {
+            return store.currentUser
+        }
+
+        switch role {
+        case .buyer:
+            return store.buyers.first
+        case .seller:
+            return store.sellers.first
+        }
+    }
+
+    private func switchToDemoProfile(_ user: UserProfile) {
+        guard store.currentUserID != user.id else {
+            return
+        }
+
+        store.setCurrentUser(user.id)
     }
 
     private func handleImportedVerificationDocument(_ result: Result<[URL], Error>) {
@@ -9098,10 +9211,16 @@ private struct ListingDetailView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 } else {
-                    Button("Message Seller") {
+                    Button(messageSellerButtonTitle) {
                         openConversation(for: listing)
                     }
                     .buttonStyle(.borderedProminent)
+
+                    if store.currentUser.role != .buyer {
+                        Text("Messaging opens from the buyer demo side so the full buyer-to-seller chat flow stays reviewable.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
 
                     if store.currentUser.role == .buyer {
                         if currentOffer?.contractPacket?.isFullySigned == true {
@@ -9865,16 +9984,38 @@ private struct ListingDetailView: View {
         if let offer {
             buyer = store.user(id: offer.buyerID)
         } else if store.currentUser.role == .buyer {
-            buyer = store.user(id: store.currentUserID)
+            buyer = store.currentUser
+        } else if let buyerDemo = preferredMessagingBuyerProfile() {
+            store.setCurrentUser(buyerDemo.id)
+            buyer = buyerDemo
         } else {
             buyer = nil
         }
 
-        guard let buyer else { return }
+        guard let buyer else {
+            notice = ListingNotice(
+                message: "Buyer messaging is unavailable right now. Open Account, then switch to the buyer demo profile in App Review access and try again."
+            )
+            return
+        }
 
         let thread = messaging.ensureConversation(listing: listing, buyer: buyer, seller: seller)
         onOpenMessages(thread.id)
         dismiss()
+    }
+
+    private var messageSellerButtonTitle: String {
+        store.currentUser.role == .buyer
+            ? "Message Seller"
+            : "Switch to Buyer Demo and Message Seller"
+    }
+
+    private func preferredMessagingBuyerProfile() -> UserProfile? {
+        if store.currentUser.role == .buyer {
+            return store.currentUser
+        }
+
+        return store.buyers.first
     }
 
     private func buyerOfferButtonTitle(for offer: OfferRecord?) -> String {

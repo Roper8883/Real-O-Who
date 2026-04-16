@@ -15,6 +15,7 @@ This project is set up as a private-sale property app for direct buyer and selle
 ## App Review positioning
 
 - The app is reviewable without mandatory authentication. It launches directly into Browse with a local starter profile so a reviewer can run through all core flows on a clean device.
+- App Review can switch between built-in buyer and seller demo profiles from `Account > App Review access`, and Seller Hub also exposes a direct `Switch to seller demo` action when seller mode is not active.
 - If no backend is available, listings, conversations, legal workspace, reminders, and sale activity continue to work from local storage.
 - Account deletion is available in-app at `Account > Data and privacy > Delete Account`.
 - Secure Messages exposes `Report Conversation`, `Report Message`, and `Block User` from the thread menu and message context menu.
@@ -27,6 +28,9 @@ This project is set up as a private-sale property app for direct buyer and selle
 - Terms of Use: `https://roper8883.github.io/Real-O-Who/real-o-who/terms-of-use/`
 - Support: `https://roper8883.github.io/Real-O-Who/real-o-who/support/`
 
+Important:
+- The support URL must use `Real-O-Who`, not the older `Real-A-Who` path that Apple flagged as broken.
+
 ## Suggested App Review Notes
 
 `Real O Who` is a private-sale property app for buyers and sellers communicating directly. App Review can test the core flow entirely on one device because the build falls back to local device storage when no backend is available.
@@ -34,7 +38,9 @@ The legal links used for App Store Connect are the updated docs in this reposito
 
 For review access:
 - No account creation is required for first-run review.
-- Start with `Start now` for the local starter profile, or choose Sign In/Create Account to evaluate account-specific flows.
+- Start in the default buyer demo profile on launch.
+- Open `Account > App Review access > Seller demo` to review seller-only features.
+- If Seller Hub is opened while buyer mode is active, use the in-app `Switch to seller demo` button from that screen.
 - Core messaging, offers, legal rep selection, and contract packet flows work in local mode without remote backend.
 
 Review-critical controls:
@@ -47,6 +53,7 @@ Review-critical controls:
 - Add final screenshots from the iPhone and iPad simulator
 - Answer export compliance accurately. Apple’s current guidance says apps using encryption limited to Apple’s operating system don’t require extra documentation, but you should still confirm the questionnaire answers for this build.
 - Confirm the support and privacy URLs are entered exactly as listed above
+- Replace any old App Store Connect support URL that still uses `https://roper8883.github.io/Real-A-Who/...` with the `Real-O-Who` URL above
 - Test once on a physical device before upload
 - Keep the public website/privacy/support pages aligned with the current property marketplace product before shipping
 
@@ -63,11 +70,10 @@ Review-critical controls:
   - `APP_STORE_CONNECT_UPLOAD_TEXT.md`
 - Suggested review order:
   1. Open app
-  2. Tap `Start now`
-  3. Browse listing flow
-  4. Use Messages and secure messaging moderation menu
-  5. Open legal workspace and verify contract packet handoff
-  6. Confirm Account area links: support/privacy/terms/delete account
+  2. Review buyer flow from Browse, Saved, and Messages
+  3. Open Account and verify support/privacy/terms/delete account plus App Review access
+  4. Switch to Seller demo
+  5. Open Seller Hub and verify listing, offer, legal, contract, settlement, and concierge flows
 - Reuse the exact copy above so App Store text and implementation details stay aligned.
 
 ## Icon guideline verification (this build)
